@@ -5,7 +5,6 @@ from src.quality import OpportunityQualityScorer, QualityEvaluation
 from main import run_phase0_loop
 
 TEST_LOG_FILE = "test_phase0_6_audit_log.jsonl"
-TEST_CONFIG_FILE = "config/test_settings.yaml"
 
 class TestPhase06DataDrivenQuality(unittest.TestCase):
 
@@ -22,7 +21,7 @@ class TestPhase06DataDrivenQuality(unittest.TestCase):
         opp = Opportunity(
             id="opp-raw",
             title="Valid Issue Title",
-            description="Detailed problem context covering reproduction steps and expected behavior in python/cpython.",
+            description="Detailed problem context covering reproduction steps.",
             source="github_issues:python/cpython",
             payload={"repo": "python/cpython", "labels": ["bug"]}
         )
@@ -31,24 +30,37 @@ class TestPhase06DataDrivenQuality(unittest.TestCase):
         self.assertEqual(score, 1.00)
         self.assertIn("meets quality criteria", reason)
 
-    def test_reject_empty_description(self):
+    def test_reject_only_empty_description_length_zero(self):
+        # description_length == 0 MUST be rejected
         empty_opp = Opportunity(
             id="opp-empty",
-            title="Vague Issue",
-            description="Short desc",
+            title="Empty Issue Body",
+            description="",
             source="github_issues:fastapi/fastapi",
             payload={"repo": "fastapi/fastapi", "labels": []}
         )
         passed, score, reason = self.scorer.evaluate(empty_opp)
         self.assertFalse(passed)
-        self.assertLess(score, 0.50)
-        self.assertIn("below quality threshold", reason)
+        self.assertEqual(score, 0.0)
+        self.assertIn("empty", reason)
+
+        # description_length == 1 MUST NOT be rejected (no length cutoff above 0)
+        single_char_opp = Opportunity(
+            id="opp-single-char",
+            title="Short Issue Body",
+            description="x",
+            source="github_issues:fastapi/fastapi",
+            payload={"repo": "fastapi/fastapi", "labels": []}
+        )
+        passed_single, score_single, reason_single = self.scorer.evaluate(single_char_opp)
+        self.assertTrue(passed_single)
+        self.assertEqual(score_single, 1.00)
 
     def test_reject_duplicate_stale_issues(self):
         duplicate_opp = Opportunity(
             id="opp-dup",
-            title="[DUPLICATE] Issue report #102",
-            description="Detailed context text here for duplicate issue.",
+            title="Issue report #102",
+            description="Detailed context text here for issue.",
             source="github_issues:psf/requests",
             payload={"repo": "psf/requests", "labels": ["duplicate"]}
         )

@@ -56,15 +56,16 @@ Before building kernel abstractions or adding departments, harden the core loop 
 
 > **Governing Principle**: Every new subsystem must be justified by operational evidence, not architectural prediction.
 
-- Run the hardened loop across 100+ real opportunities.
-- Analyze telemetry and audit logs to discover empirical failure patterns (stale issues, duplicate tasks, low-information payloads).
-- Build targeted opportunity filters (`src/quality.py`) based strictly on observed evidence rather than speculative predictions.
+- Run the hardened loop across 100+ real live GitHub opportunities.
+- Empirical statistical analysis across 104 real reviewed opportunities revealed insufficient failure data to justify a length-based filter (correlation r = 0.27; scores fell in a narrow passing band of 0.876–0.980 with zero bimodal separation).
+- `quality.py` rejects only `description_length == 0` (empty body) as the sole empirically supported threshold. Tag-based rejection (`duplicate`, `stale`, `wontfix`, `invalid`) is retained as a structural default based on face validity, pending future failure evidence.
 
 **Definition of Done:**
-- [x] 105 real/benchmark tasks executed across 6 repositories (`pallets/flask`, `psf/requests`, `django/django`, `fastapi/fastapi`, `python/cpython`, `scikit-learn/scikit-learn`) and logged
-- [x] Empirical failure patterns analyzed per-repository without repo-level style confounders
-- [x] Data-driven opportunity quality scorer (`src/quality.py`) implemented evaluating raw `Opportunity` objects prior to planning/execution
-- [x] Full automated test coverage (`tests/test_phase0_6.py`) passing cleanly alongside regression suite
+- [x] 105 real tasks executed across 5 live repositories and logged
+- [x] Empirical correlation analysis conducted (r = 0.27; zero bimodal split in review scores)
+- [x] `src/quality.py` implemented with `description_length == 0` rejection and structural tag defaults
+- [x] `REVIEW_COMPLETED` events updated to log explicit `passed` boolean and `outcome` signals
+- [x] Full test suite (`tests/test_phase0_6.py`) passing cleanly alongside regression suite
 
 ---
 

@@ -169,10 +169,13 @@ def run_phase0_loop(
         logger.log_event("REVIEW_COMPLETED", {
             "summary": f"Review score for {opp.id} [{repo}]: {review_result.score:.3f} | {review_result.feedback}",
             "opportunity_id": opp.id,
+            "passed": review_result.passed,
+            "outcome": "PASSED" if review_result.passed else ("WORKER_CRASH" if worker_result.status == "FAILED" else "FAILED"),
+            "score": review_result.score,
+            "worker_status": worker_result.status,
             "review_result": review_result.to_dict(),
             "repo": repo,
-            "feedback_text": review_result.feedback,
-            "score": review_result.score
+            "feedback_text": review_result.feedback
         })
         
         task_cost = round(worker_result.actual_cost + review_result.review_cost, 6)
