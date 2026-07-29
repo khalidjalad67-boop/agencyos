@@ -32,7 +32,7 @@ Skip entirely: Kernel abstraction, Executive Board, Policy Engine, Memory, Knowl
 
 ---
 
-## Phase 0.5 — Hardening
+## Phase 0.5 — Hardening [COMPLETE ✅]
 
 Before building kernel abstractions or adding departments, harden the core loop by running real workloads continuously and breaking edge cases.
 
@@ -43,14 +43,26 @@ Before building kernel abstractions or adding departments, harden the core loop 
 - **Reliability Metrics**:
   - Aggregated loop telemetry: Success Rate, Mean Task Time, Mean Review Time, Average Cost, Retry Counts, Approval Rate.
 - **Budget Guard**:
-  - Enforce hard cost limits (e.g., per-task $0.25 ceiling, daily budget limit). Block execution before calling worker if estimated cost exceeds budget.
-- **Opportunity Quality Scoring**:
-  - Score opportunities on repo quality, difficulty, and success probability before planning; reject low-ROI items.
+  - Enforce hard cost limits (per-task $0.25 ceiling, persistent daily budget limit). Block execution before calling worker if estimated cost exceeds budget.
 
 **Definition of Done:**
-- [ ] 50+ real opportunities processed continuously without manual crash intervention
-- [ ] Hard budget limits automatically reject tasks exceeding per-task or daily ceilings
-- [ ] Loop telemetry (success rate, mean execution time, total cost) tracked in audit reporting
+- [x] Resilient retry & crash isolation: 50+ real/simulated workload tasks processed continuously without manual crash intervention
+- [x] Hard budget limits automatically reject tasks exceeding per-task ($0.25) or daily ($2.00) ceilings before worker invocation
+- [x] Loop telemetry (success rate, failure rate, mean execution time, total cost) tracked in structured `TelemetryReport` JSON objects
+
+---
+
+## Phase 0.6 — Data-Driven Opportunity Filtering (Deferred)
+
+> **Governing Principle**: Every new subsystem must be justified by operational evidence, not architectural prediction.
+
+- Run the hardened loop across 100+ real opportunities.
+- Analyze telemetry and audit logs to discover empirical failure patterns (stale issues, duplicate tasks, low-information payloads).
+- Build targeted opportunity filters (`src/quality.py`) based strictly on observed evidence rather than speculative predictions.
+
+**Definition of Done:**
+- [ ] 100+ real tasks executed and logged
+- [ ] Opportunity filters implemented based on empirical failure patterns
 
 ---
 

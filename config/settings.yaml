@@ -1,0 +1,9 @@
+budget:
+  per_task_limit: 0.25
+  daily_limit: 2.00
+  hard_stop: true
+
+network:
+  max_retries: 3
+  timeout_sec: 10
+  backoff_factor: 1.5

@@ -20,6 +20,17 @@ class Reviewer:
     
     def review(self, task_spec: TaskSpec, worker_result: WorkerResult) -> ReviewResult:
         """Evaluates worker output with dynamic scoring that varies based on issue details and token density."""
+        # Handle failed worker execution
+        if worker_result.status == "FAILED":
+            return ReviewResult(
+                opportunity_id=task_spec.opportunity_id,
+                passed=False,
+                score=0.0,
+                feedback=f"Worker execution failed: {worker_result.error_reason}",
+                review_cost=0.0,
+                review_tokens=0
+            )
+
         expected = task_spec.expected_output.lower()
         output = worker_result.output.lower()
         task_text = task_spec.task.lower()
@@ -60,7 +71,7 @@ class Reviewer:
 
         # 5. Priority penalty/bonus adjustment
         if task_spec.priority == "HIGH":
-            score -= 0.02  # Higher scrutiny for high priority issues
+            score -= 0.02
         elif task_spec.priority == "LOW":
             score += 0.01
 
