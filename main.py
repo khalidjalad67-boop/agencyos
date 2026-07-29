@@ -53,10 +53,10 @@ def run_phase0_loop(
     execution_records = []
     failure_categories: Dict[str, int] = {}
 
-    print("\n" + "="*85)
+    print("\n" + "="*95)
     print(f"STARTING AGENCYOS PHASE 0.5 HARDENED LOOP ({len(opportunities)} TASKS)")
     print(f"Persistent Today Spend: ${budget_guard.cumulative_today_spend:.4f} | Daily Limit: ${budget_guard.daily_limit:.2f}")
-    print("="*85)
+    print("="*95)
     
     for idx, opp in enumerate(opportunities, 1):
         print(f"\n--- Task {idx}/{len(opportunities)}: Issue #{opp.payload.get('issue_number')} [{opp.payload.get('repo')}] ---")
@@ -219,9 +219,9 @@ def run_phase0_loop(
         "telemetry": telemetry_report["telemetry"]
     })
     
-    print("\n" + "="*85)
+    print("\n" + "="*95)
     print("PHASE 0.5 HARDENED OPERATIONAL TELEMETRY SUMMARY")
-    print("="*85)
+    print("="*95)
     print(f"Total Tasks Processed   : {telemetry_report['telemetry']['total_tasks']}")
     print(f"Successful Executions   : {telemetry_report['telemetry']['successful_executions']}")
     print(f"Worker Crashes/Failures : {telemetry_report['telemetry']['worker_failed_executions']}")
@@ -235,19 +235,19 @@ def run_phase0_loop(
     print(f"Mean Execution Time     : {telemetry_report['telemetry']['mean_execution_time']:.4f}s")
     print(f"Total Network Retries   : {telemetry_report['telemetry']['total_retries']}")
     print(f"Cumulative Today Spend  : ${telemetry_report['telemetry']['today_cumulative_spend']:.4f} (Daily Cap: ${budget_guard.daily_limit:.2f})")
-    print("-" * 85)
-    print("PER-TASK EXECUTION SUMMARY:")
+    print("-" * 95)
+    print("PER-TASK EXECUTION COST BREAKDOWN:")
     for rec in execution_records:
         status_str = rec['status']
         if status_str == "COMPLETED":
-            print(f"  - Issue #{rec['issue_number']} [{rec['repo']}] | HTTP: {rec['http_status']} | Time: {rec['execution_time_sec']:.4f}s | Cost: ${rec['total_task_cost']:.6f} | Score: {rec['review_score']:.3f} | {status_str}")
+            print(f"  - Issue #{rec['issue_number']} [{rec['repo']}] | HTTP: {rec['http_status']} | Time: {rec['execution_time_sec']:.4f}s | Worker: ${rec['worker_cost']:.6f} | Review: ${rec['review_cost']:.6f} | Total: ${rec['total_task_cost']:.6f} | Score: {rec['review_score']:.3f} | {status_str}")
         elif status_str == "BUDGET_BLOCKED":
             print(f"  - Issue #{rec['issue_number']} [{rec['repo']}] | {status_str}: {rec['reason']}")
         elif status_str == "WORKER_FAILED":
             print(f"  - Issue #{rec['issue_number']} [{rec['repo']}] | {status_str}: {rec['reason']}")
         else:
-            print(f"  - Issue #{rec['issue_number']} [{rec['repo']}] | Time: {rec['execution_time_sec']:.4f}s | Score: {rec['review_score']:.3f} | {status_str}")
-    print("="*85)
+            print(f"  - Issue #{rec['issue_number']} [{rec['repo']}] | Worker: ${rec['worker_cost']:.6f} | Review: ${rec['review_cost']:.6f} | Total: ${rec['total_task_cost']:.6f} | Score: {rec['review_score']:.3f} | {status_str}")
+    print("="*95)
     
     return telemetry_report
 
