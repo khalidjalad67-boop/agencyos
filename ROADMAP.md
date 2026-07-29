@@ -68,11 +68,11 @@ Before building kernel abstractions or adding departments, harden the core loop 
 
 ## Phase 1 — Kernel Foundations
 
-Only build what Phase 0 is now straining against:
+Only build what Phase 0/0.5 is genuinely straining against:
 - **Event Bus** — only if more than one worker needs to react to task state
-- **Audit Log** — structured log of every decision (cheap, do early regardless)
-- **Budget Manager** — tracks spend per task, hard-stops at a ceiling
 - **Policy Engine** — starts as a config file of rules, not a service
+
+> *Note: Audit Log and Budget Manager are already fully satisfied by `src/logger.py` and `src/budget_guard.py` built in Phase 0 / 0.5 — no rebuild needed.*
 
 **Definition of Done:**
 - [ ] Phase 0 loop runs unattended except at defined approval gates
