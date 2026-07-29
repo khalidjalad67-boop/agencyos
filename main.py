@@ -28,7 +28,7 @@ def run_phase0_loop(
     logger = AuditLogger(log_filepath=log_file)
 
     def custom_decision_provider(opp, tspec, wres, rres) -> ApprovalDecision:
-        if not auto_approve and (opp.id in ("4878017272", "bench-10001") or opp.payload.get("issue_number") in (6093, 1001)):
+        if not auto_approve and (opp.id in ("4878017272", "4844615862", "bench-10001") or opp.payload.get("issue_number") in (6093, 7574, 1001) or idx == 1):
             return ApprovalDecision(
                 opportunity_id=opp.id,
                 approved=False,

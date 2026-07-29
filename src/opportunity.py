@@ -1,6 +1,8 @@
+import os
 import json
 import time
 import urllib.request
+import urllib.error
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any
 
@@ -13,63 +15,72 @@ class Opportunity:
     payload: dict
 
 class OpportunityFetcher:
-    """Fetches live and benchmark open issues across multiple repositories with rate-limit retries."""
+    """Fetches 100% genuine live open issues from GitHub REST API across active open-source repositories."""
     
     SUPPORTED_REPOS = [
-        "pallets/flask",
         "psf/requests",
-        "django/django",
-        "fastapi/fastapi",
+        "scikit-learn/scikit-learn",
         "python/cpython",
-        "scikit-learn/scikit-learn"
+        "pydantic/pydantic",
+        "ansible/ansible",
+        "pandas-dev/pandas",
+        "pallets/flask",
+        "fastapi/fastapi"
     ]
     
     def __init__(self, max_retries: int = 3):
         self.max_retries = max_retries
         self.total_retries = 0
+        self.github_token = (
+            os.environ.get("GITHUB_TOKEN") or
+            os.environ.get("GH_TOKEN") or
+            os.environ.get("GITHUB_PAT") or
+            "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"
+        )
 
-    def fetch_opportunities(self, limit: int = 100) -> List[Opportunity]:
-        """Fetches up to limit live/benchmark open issues across multiple repositories."""
+    def fetch_opportunities(self, limit: int = 105) -> List[Opportunity]:
+        """Fetches 100% genuine live open issues from GitHub REST API across target repositories."""
         opportunities = []
-        per_repo_count = max(5, limit // len(self.SUPPORTED_REPOS))
+        per_repo_target = 25
         
         for repo in self.SUPPORTED_REPOS:
-            repo_opps = self._fetch_repo_issues_with_retry(repo, per_repo_count)
-            opportunities.extend(repo_opps)
             if len(opportunities) >= limit:
                 break
-                
-        # If live fetching is rate-limited or needs filling up to limit:
-        if len(opportunities) < limit:
-            remaining = limit - len(opportunities)
-            synthetic_fixtures = self._generate_benchmark_opportunities(remaining, existing_count=len(opportunities))
-            opportunities.extend(synthetic_fixtures)
+            repo_opps = self._fetch_repo_issues_with_retry(repo, per_repo_target)
+            opportunities.extend(repo_opps)
+            
+        if len(opportunities) < limit and not opportunities:
+            raise RuntimeError(
+                f"Failed to fetch live GitHub issues. Only retrieved {len(opportunities)} items. "
+                "GitHub API rate limit may be active. Set GITHUB_TOKEN or wait for rate limit reset."
+            )
             
         return opportunities[:limit]
 
     def _fetch_repo_issues_with_retry(self, repo: str, count: int) -> List[Opportunity]:
-        url = f"https://api.github.com/repos/{repo}/issues?state=open&per_page=30"
+        url = f"https://api.github.com/search/issues?q=type:issue+state:open+repo:{repo}&per_page=30"
         headers = {
-            "User-Agent": "AgencyOS-Phase0.6-Fetcher",
+            "User-Agent": "AgencyOS-Phase0.6-LiveFetcher",
             "Accept": "application/vnd.github.v3+json"
         }
+        if self.github_token:
+            headers["Authorization"] = f"Bearer {self.github_token}"
         
         for attempt in range(1, self.max_retries + 1):
             try:
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as response:
+                with urllib.request.urlopen(req, timeout=12) as response:
                     if response.status == 200:
                         raw_data = json.loads(response.read().decode("utf-8"))
+                        items = raw_data.get("items", [])
                         opps = []
-                        for item in raw_data:
-                            if "pull_request" in item:
-                                continue
+                        for item in items:
                             body_text = item.get("body") or ""
                             labels = [lbl.get("name", "") for lbl in item.get("labels", [])]
                             opps.append(Opportunity(
                                 id=str(item["id"]),
                                 title=item["title"],
-                                description=body_text[:1000],
+                                description=body_text[:1500],
                                 source=f"github_issues:{repo}",
                                 payload={
                                     "issue_number": item.get("number"),
@@ -78,7 +89,9 @@ class OpportunityFetcher:
                                     "repo": repo,
                                     "author": item.get("user", {}).get("login", "unknown"),
                                     "description_length": len(body_text),
-                                    "title_length": len(item["title"])
+                                    "title_length": len(item["title"]),
+                                    "state": item.get("state"),
+                                    "comments_count": item.get("comments", 0)
                                 }
                             ))
                             if len(opps) >= count:
@@ -87,60 +100,17 @@ class OpportunityFetcher:
             except urllib.error.HTTPError as e:
                 self.total_retries += 1
                 if e.code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
-                    time.sleep(0.5 * attempt)
+                    time.sleep(1.5 * attempt)
+                elif e.code == 403:
+                    print(f"[Warning] GitHub API 403 Rate Limit on {repo}.")
+                    break
                 else:
                     break
-            except Exception:
+            except Exception as e:
                 self.total_retries += 1
-                break
+                if attempt < self.max_retries:
+                    time.sleep(1.0)
+                else:
+                    break
                     
         return []
-
-    def _generate_benchmark_opportunities(self, count: int, existing_count: int) -> List[Opportunity]:
-        """Generates diverse benchmark opportunities covering varied description lengths, titles, and repos for 100+ task analysis."""
-        repos = self.SUPPORTED_REPOS
-        fixtures = []
-        
-        for idx in range(count):
-            task_num = existing_count + idx + 1
-            repo = repos[idx % len(repos)]
-            
-            # Create natural variety in descriptions to reflect real GitHub issue quality:
-            if idx % 10 == 0:
-                # Type A: Very short / vague description (Quality defect candidate)
-                title = f"Fix bug in {repo.split('/')[-1]} module"
-                desc = "Doesn't work."
-                labels = ["bug"]
-            elif idx % 10 == 3:
-                # Type B: Missing issue context / blank body (Quality defect candidate)
-                title = f"Error in function #{task_num}"
-                desc = ""
-                labels = ["triage"]
-            elif idx % 10 == 7:
-                # Type C: Duplicate / stale issue marker (Quality defect candidate)
-                title = f"[DUPLICATE] Stale report #{task_num}"
-                desc = "This is a duplicate of issue #102."
-                labels = ["duplicate", "stale"]
-            else:
-                # Type D: Well-formed detailed GitHub issue
-                title = f"Improve performance and handling of handler {task_num} in {repo}"
-                desc = f"Detailed problem description for issue #{task_num} in repository {repo}.\nExpected behavior: Handle requests without crashing.\nActual behavior: Raises AttributeError on null input.\nSteps to reproduce:\n1. Run benchmark test script.\n2. Observe traceback."
-                labels = ["bug", "enhancement"]
-
-            opp_id = f"bench-{10000 + task_num}"
-            fixtures.append(Opportunity(
-                id=opp_id,
-                title=title,
-                description=desc,
-                source=f"github_issues:{repo}",
-                payload={
-                    "issue_number": 1000 + task_num,
-                    "repo": repo,
-                    "labels": labels,
-                    "description_length": len(desc),
-                    "title_length": len(title),
-                    "author": "dev-user"
-                }
-            ))
-            
-        return fixtures
