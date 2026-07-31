@@ -1,7 +1,7 @@
 import os
 import sys
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from src.opportunity import OpportunityFetcher, Opportunity
 from src.planner import Planner, TaskSpec
@@ -287,12 +287,71 @@ def run_phase0_loop(
     print("PER-REPOSITORY TELEMETRY BREAKDOWN:")
     for r_name, r_stats in repo_telemetry.items():
         s_rate = (r_stats['success'] / r_stats['total'] * 100) if r_stats['total'] else 0.0
-        print(f"  - Repository {r_name:<25} | Total: {r_stats['total']:<3} | Success: {r_stats['success']:<3} ({s_rate:5.1f}%) | Rejected: {r_stats['rejected']} | Cost: ${r_stats['cost']:.6f}")
-    print("="*95)
-    
     return telemetry_report
+
+def run_phase0_7_autonomous_loop(
+    db_path: str = "agencyos.db",
+    num_opportunities: int = 105,
+    interval_sec: float = 30.0,
+    max_ticks: Optional[int] = None
+) -> Dict[str, Any]:
+    """Executes Phase 0.7 restart-safe autonomous operations service using persistent SQLite database.
+    If max_ticks is None, runs continuously on interval (for 24h stability validation).
+    """
+    from src.db import Database
+    from src.scheduler import Scheduler
+    from src.engine import AutonomousEngine
+    from src.health import HealthMonitor
+    from src.recovery import run_startup_recovery
+
+    print("\n" + "="*95)
+    print(f"STARTING AGENCYOS PHASE 0.7 AUTONOMOUS OPERATIONS (SQLite: {db_path})")
+    print("="*95)
+
+    db = Database(db_path)
+    recovery_summary = run_startup_recovery(db)
+    print(f"[STARTUP RECOVERY] Summary: {recovery_summary}")
+
+    scheduler = Scheduler(db, interval_sec=interval_sec)
+    engine = AutonomousEngine(db)
+    health = HealthMonitor(db, engine.watchdog)
+
+    tick = 0
+    try:
+        while True:
+            tick += 1
+            scheduled_ids = scheduler.tick(limit=num_opportunities)
+            print(f"[SCHEDULER TICK {tick}] Scheduled {len(scheduled_ids)} new task execution events.")
+
+            unfinished_states = ("DISCOVERED", "PLANNED", "READY", "EXECUTING", "REVIEWED", "WAITING_APPROVAL")
+            tasks_to_process = []
+            for state in unfinished_states:
+                tasks_to_process.extend(db.get_tasks_by_state(state))
+
+            print(f"[ENGINE RUN Tick {tick}] Processing {len(tasks_to_process)} active/pending tasks...")
+            for task in tasks_to_process:
+                engine.process_task(task["task_id"])
+
+            metrics = health.get_metrics()
+            print(f"[HEALTH TELEMETRY Tick {tick}] Queue: {metrics['queue_depth']} | Running: {metrics['running_tasks']} | Pending Approvals: {metrics['pending_approvals']} | Failure Rate: {metrics['failure_rate']*100:.1f}%")
+
+            if max_ticks is not None and tick >= max_ticks:
+                break
+
+            print(f"Sleeping {interval_sec}s until next scheduler tick... (Press Ctrl+C to stop)")
+            time.sleep(interval_sec)
+    except KeyboardInterrupt:
+        print("\n[AUTONOMOUS ENGINE] Gracefully shutting down service loop.")
+
+    final_metrics = health.get_metrics()
+    print("\n" + "="*95)
+    print("PHASE 0.7 AUTONOMOUS HEALTH MONITOR TELEMETRY (JSON):")
+    print(health.get_metrics_json())
+    print("="*95)
+    return final_metrics
 
 if __name__ == "__main__":
     from src.quality import OpportunityQualityScorer
-    print(">>> RUNNING MAIN PHASE 0.6 DATA-DRIVEN HARDENED LOOP (105 TASKS) <<<")
-    run_phase0_loop(num_opportunities=105, auto_approve=True, quality_scorer=OpportunityQualityScorer())
+    print(">>> RUNNING MAIN PHASE 0.7 AUTONOMOUS ENGINE SERVICE <<<")
+    run_phase0_7_autonomous_loop(num_opportunities=105, interval_sec=30.0, max_ticks=None)
+

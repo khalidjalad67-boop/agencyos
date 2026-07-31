@@ -69,6 +69,164 @@ Before building kernel abstractions or adding departments, harden the core loop 
 
 ---
 
+## Phase 0.7 — Autonomous Operations [COMPLETE ✅]
+
+Transition AgencyOS from a manually triggered execution loop into a restart-safe autonomous service that operates without a live terminal while preserving correctness across failures.
+
+This phase validates **behavior**, not uptime. Phase 0.8 validates uptime.
+
+### Components
+
+**Scheduler**
+- Runs on a configurable interval (Developer Mode default: 30 seconds)
+- Creates execution events
+- Never executes work directly
+- Prevents duplicate scheduling
+
+**Persistent Task State Machine (SQLite)**
+
+Persist task lifecycle:
+
+NEW
+→ DISCOVERED
+→ PLANNED
+→ READY
+→ EXECUTING
+→ REVIEWED
+→ WAITING_APPROVAL
+→ APPROVED
+→ DELIVERED
+→ COMPLETED
+
+Failure states:
+
+FAILED
+RETRYING
+CANCELLED
+EXPIRED
+
+**Persistent Approval Queue (SQLite)**
+
+Approvals are persisted as rows:
+
+- PENDING
+- APPROVED
+- REJECTED
+
+Never use interactive terminal prompts.
+
+**Idempotency Guard**
+
+Scope ONLY to Worker and Reviewer LLM calls.
+
+Persist keys such as:
+
+WORKER:<task_id>:v1
+
+REVIEW:<task_id>:v1
+
+Do **not** implement:
+
+- Side Effect Executor
+- PR idempotency
+- Email idempotency
+- Invoice idempotency
+- Blog publishing idempotency
+
+Those belong to future phases. Only document this architectural extension point inside `ARCHITECTURE.md` if necessary; do not implement it.
+
+**Operational Watchdog**
+
+Responsibilities:
+
+- Detect repeated failures
+- Apply exponential backoff
+- Temporarily disable unhealthy opportunity sources
+- Re-enable after cooldown
+- Log every action
+
+The watchdog must never terminate the application.
+
+**Health Monitor**
+
+Expose structured JSON only.
+
+Metrics:
+
+- queue_depth
+- running_tasks
+- pending_approvals
+- disabled_sources
+- failure_rate
+
+No dashboard.
+
+**Startup Recovery Routine**
+
+Implement a startup recovery function (not a new Kernel service or directory).
+
+Runs once at startup.
+
+Responsibilities:
+
+- Load unfinished tasks
+- Inspect persisted task state
+- For EXECUTING tasks, verify Worker/Reviewer idempotency keys before resuming
+- Reload approval queue
+- Ignore COMPLETED tasks
+- Never execute business logic itself
+
+### Database Layout
+
+Use separate SQLite tables.
+
+Do not mix responsibilities.
+
+Required tables:
+
+- tasks
+- approvals
+- idempotency_keys
+- audit_log
+- budget
+
+### Definition of Done
+
+- [x] Scheduler executes tasks automatically on interval
+- [x] Task state survives restart
+- [x] Approval queue survives restart
+- [x] Watchdog backs off repeated failures
+- [x] Disabled sources recover after cooldown
+- [x] No duplicate execution after restart
+- [x] No duplicate Worker or Reviewer billing after restart
+- [x] Verified by forcibly terminating the process (SIGKILL / kill -9) during EXECUTING and confirming correct recovery
+- [x] Budget enforcement remains correct after restart
+- [x] Live GitHub fetching from Phase 0.6 remains unchanged in normal operation
+- [x] Fixtures/mocks are used ONLY inside the SIGKILL crash-recovery test harness to isolate state-machine correctness from network variability
+
+---
+
+## Phase 0.8 — Stability Validation (Deferred)
+
+This phase validates durability rather than new functionality.
+
+It introduces no new architecture beyond Phase 0.7.
+
+Only continuous execution and observation.
+
+### Definition of Done
+
+- [ ] Operates continuously for 24 hours
+- [ ] No duplicate execution
+- [ ] No approval loss
+- [ ] No task corruption
+- [ ] Automatic recovery after restart
+- [ ] Audit log remains consistent
+- [ ] RSS memory growth stays within 10% of baseline over 24 hours
+- [ ] No orphaned workers after restart
+
+---
+
 ## Phase 1 — Kernel Foundations
 
 Only build what Phase 0/0.5 is genuinely straining against:
