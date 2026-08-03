@@ -1,0 +1,4 @@
+# AgencyOS Requirements
+# AgencyOS uses Python 3 Standard Library modules exclusively (sqlite3, urllib, json, dataclasses, logging, unittest).
+# Minimum Python Version: 3.10+
+# No third-party PyPI packages are required to run the kernel.
