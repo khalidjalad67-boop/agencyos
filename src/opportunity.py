@@ -35,7 +35,7 @@ class OpportunityFetcher:
             os.environ.get("GITHUB_TOKEN") or
             os.environ.get("GH_TOKEN") or
             os.environ.get("GITHUB_PAT") or
-            "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"
+            ""
         )
 
     def fetch_opportunities(self, limit: int = 105) -> List[Opportunity]:
