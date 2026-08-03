@@ -15,10 +15,14 @@ class TestPhase0(unittest.TestCase):
     def setUp(self):
         if os.path.exists(TEST_LOG_FILE):
             os.remove(TEST_LOG_FILE)
+        if os.path.exists("agencyos.db"):
+            os.remove("agencyos.db")
 
     def tearDown(self):
         if os.path.exists(TEST_LOG_FILE):
             os.remove(TEST_LOG_FILE)
+        if os.path.exists("agencyos.db"):
+            os.remove("agencyos.db")
 
     def test_live_opportunity_fetcher(self):
         fetcher = OpportunityFetcher()
@@ -98,13 +102,18 @@ class TestPhase0(unittest.TestCase):
         gate_approve = ApprovalGate(decision_provider=approve_provider)
         gate_reject = ApprovalGate(decision_provider=reject_provider)
         
-        opp = Opportunity("id1", "t", "d", "s", {})
-        tspec = TaskSpec("id1", "t", "p", "e", 0.05, 100)
-        wres = WorkerResult("id1", "out", 0.65, 0.00008, 100, 200, "gemini-1.5-flash", 200)
-        rres = ReviewResult("id1", True, 0.9, "good", 0.00003, 50)
+        opp_approve = Opportunity("id_approve", "t", "d", "s", {})
+        tspec_approve = TaskSpec("id_approve", "t", "p", "e", 0.05, 100)
+        wres_approve = WorkerResult("id_approve", "out", 0.65, 0.00008, 100, 200, "gemini-1.5-flash", 200)
+        rres_approve = ReviewResult("id_approve", True, 0.9, "good", 0.00003, 50)
 
-        self.assertTrue(gate_approve.request_approval(opp, tspec, wres, rres).approved)
-        self.assertFalse(gate_reject.request_approval(opp, tspec, wres, rres).approved)
+        opp_reject = Opportunity("id_reject", "t", "d", "s", {})
+        tspec_reject = TaskSpec("id_reject", "t", "p", "e", 0.05, 100)
+        wres_reject = WorkerResult("id_reject", "out", 0.65, 0.00008, 100, 200, "gemini-1.5-flash", 200)
+        rres_reject = ReviewResult("id_reject", True, 0.9, "good", 0.00003, 50)
+
+        self.assertTrue(gate_approve.request_approval(opp_approve, tspec_approve, wres_approve, rres_approve).approved)
+        self.assertFalse(gate_reject.request_approval(opp_reject, tspec_reject, wres_reject, rres_reject).approved)
 
     def test_audit_logger(self):
         logger = AuditLogger(log_filepath=TEST_LOG_FILE)
