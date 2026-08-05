@@ -17,17 +17,16 @@ class HealthMonitor:
 
         queue_depth = sum(1 for t in all_tasks if t["state"] in ("NEW", "DISCOVERED", "PLANNED", "READY"))
         running_tasks = sum(1 for t in all_tasks if t["state"] == "EXECUTING")
-        
-        total_eval = sum(1 for t in all_tasks if t["state"] in ("COMPLETED", "FAILED", "CANCELLED", "RETRYING"))
-        failed_count = sum(1 for t in all_tasks if t["state"] in ("FAILED", "CANCELLED"))
-        failure_rate = round(failed_count / total_eval, 4) if total_eval > 0 else 0.0
+
+        telemetry = self.db.get_telemetry_metrics()
 
         return {
             "queue_depth": queue_depth,
             "running_tasks": running_tasks,
             "pending_approvals": len(pending_approvals),
             "disabled_sources": disabled_sources,
-            "failure_rate": failure_rate
+            "failure_rate": telemetry["failure_rate"],
+            "telemetry": telemetry
         }
 
     def get_metrics_json(self) -> str:

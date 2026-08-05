@@ -14,6 +14,45 @@ class OperationalWatchdog:
         self.base_cooldown_sec = base_cooldown_sec
         self.consecutive_failures: Dict[str, int] = {}
         self.disabled_sources: Dict[str, float] = {}  # source -> re_enable_timestamp
+        self._in_warning: bool = False
+        self._stall_active: bool = False
+
+    def _get_task_counts(self) -> Dict[str, Any]:
+        tasks = self.db.get_all_tasks()
+        counts: Dict[str, int] = {}
+        for t in tasks:
+            st = t["state"]
+            counts[st] = counts.get(st, 0) + 1
+        return {"task_counts": counts, "total_tasks": len(tasks)}
+
+    def check_heartbeat(self, now: float, last_heartbeat: float, interval_sec: float) -> None:
+        """Monitors heartbeat interval gaps. Emits WATCHDOG_WARNING if gap > 2x interval,
+        STALL_DETECTED if gap > 5x interval, and RECOVERY_STARTED / RECOVERY_COMPLETED
+        when a stall recovers. Resets _in_warning when gap returns to normal.
+        """
+        if last_heartbeat == 0.0:
+            return  # first tick, no gap to measure
+        gap = now - last_heartbeat
+
+        if gap > 5.0 * interval_sec and not self._stall_active:
+            task_counts = self._get_task_counts()
+            self.db.log_event("STALL_DETECTED", {"gap_sec": gap, **task_counts})
+            self._stall_active = True
+            self._in_warning = True
+
+        elif gap > 2.0 * interval_sec and not self._in_warning:
+            self.db.log_event("WATCHDOG_WARNING", {"gap_sec": gap, "interval_sec": interval_sec})
+            self._in_warning = True
+
+        # Recovery path: gap returned to normal
+        if gap <= 1.5 * interval_sec:
+            if self._stall_active:
+                task_counts = self._get_task_counts()
+                self.db.log_event("RECOVERY_STARTED", {"gap_sec": gap, **task_counts})
+                self.db.log_event("RECOVERY_COMPLETED", {"gap_sec": gap, **task_counts})
+                self._stall_active = False
+            # Reset warning flag unconditionally when gap normalizes
+            self._in_warning = False
 
     def record_success(self, source: str) -> None:
         """Resets failure count on success."""

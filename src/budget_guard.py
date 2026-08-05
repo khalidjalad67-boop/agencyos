@@ -30,9 +30,28 @@ class BudgetGuard:
             # One-time migration path for legacy audit_log.jsonl
             legacy_spend = self._calculate_legacy_today_spend()
             if legacy_spend > 0:
-                self.db.record_spend("migration", legacy_spend, self.today_date_str, "Legacy audit_log spend migration")
+                self.db.execute_atomic_transition(
+                    {
+                        "task_id": "migration",
+                        "opportunity_id": "migration",
+                        "state": "COMPLETED",
+                        "title": "Legacy audit_log spend migration"
+                    },
+                    spend_record=(legacy_spend, self.today_date_str, "Legacy audit_log spend migration")
+                )
 
-        self.cumulative_today_spend = self.db.get_today_spend(self.today_date_str)
+        self._spend_override: Optional[float] = None
+
+    @property
+    def cumulative_today_spend(self) -> float:
+        """Live SQL query property returning exact sum of spend records for today's date from budget table."""
+        if self._spend_override is not None:
+            return self._spend_override
+        return self.db.get_today_spend(self.today_date_str)
+
+    @cumulative_today_spend.setter
+    def cumulative_today_spend(self, value: float) -> None:
+        self._spend_override = value
 
     def _load_config(self) -> Dict[str, Any]:
         if os.path.exists(self.config_path):
@@ -70,20 +89,18 @@ class BudgetGuard:
 
     def check_budget(self, task_spec: TaskSpec) -> Tuple[bool, str]:
         """Pre-execution check against TaskSpec estimated_cost before Worker invocation."""
-        db_spend = self.db.get_today_spend(self.today_date_str)
-        self.cumulative_today_spend = max(self.cumulative_today_spend, db_spend)
+        current_spend = self.cumulative_today_spend
 
         # 1. Per-task ceiling check
         if task_spec.estimated_cost > self.per_task_limit:
             return False, f"Estimated cost (${task_spec.estimated_cost:.4f}) exceeds per-task ceiling (${self.per_task_limit:.2f})"
 
         # 2. Persistent daily limit check
-        if self.cumulative_today_spend + task_spec.estimated_cost > self.daily_limit:
-            return False, f"Estimated cost (${task_spec.estimated_cost:.4f}) + Today Spend (${self.cumulative_today_spend:.4f}) exceeds daily limit (${self.daily_limit:.2f})"
+        if current_spend + task_spec.estimated_cost > self.daily_limit:
+            return False, f"Estimated cost (${task_spec.estimated_cost:.4f}) + Today Spend (${current_spend:.4f}) exceeds daily limit (${self.daily_limit:.2f})"
 
         return True, "Budget approved"
 
     def record_spend(self, cost: float, opportunity_id: str = "unknown") -> None:
         """Records spend directly into the single source of truth SQLite budget table."""
         self.db.record_spend(opportunity_id, cost, self.today_date_str, "Task spend")
-        self.cumulative_today_spend = self.db.get_today_spend(self.today_date_str)

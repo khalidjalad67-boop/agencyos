@@ -75,6 +75,24 @@ Transition AgencyOS from a manually triggered execution loop into a restart-safe
 
 This phase validates **behavior**, not uptime. Phase 0.8 validates uptime.
 
+> ⚠️ **Verification flag — Phase 0.7 protections failed when exercised.**
+> A deep line-by-line audit of the 2026-08-04 VPS soak run confirmed that
+> Phase 0.7's `AutonomousEngine` was actively running (processing 222
+> 10-step pipeline tasks post-blackout), but its own protections failed:
+> `tasks`, `audit_log`, and `idempotency_keys` SQLite tables remained at 0
+> rows; quality-rejected opportunity `4335223464` was re-planned and completed
+> TWICE more via `AutonomousEngine`'s 10-step pipeline; and opportunities
+> `4844615862` and `4827149379` re-executed 2 additional times post-blackout
+> (totaling 12x executions each). Phase 0.7 is **unverified and broken in practice**
+> until Phase 0.8 Engine Stabilization achieves full persistence, idempotency,
+> and state gate enforcement.
+
+A speculative "Side Effect Executor" (real external actions — PRs,
+commits, etc.) was scoped as part of this phase and then cut before any
+real external action existed to justify it — see "Do not implement"
+below. Deferred until a completed, approved task actually needs to touch
+the outside world.
+
 ### Components
 
 **Scheduler**
@@ -206,24 +224,147 @@ Required tables:
 
 ---
 
-## Phase 0.8 — Stability Validation (Deferred)
+## Phase 0.8 — Engine Stabilization [FAILED FIRST ATTEMPT ❌ — BLOCKING]
 
-This phase validates durability rather than new functionality.
+> **Governing Principle**: A loop that produces plausible-looking telemetry is not the same as a loop that is correct. Verify against raw artifacts — DB rows and log events, not summaries — every time.
 
-It introduces no new architecture beyond Phase 0.7.
+**Status**: This phase was previously logged as "Stability Validation: IN PROGRESS." A full forensic audit of a real 24h+ VPS run (`audit_log.jsonl`, 5,293 events + `agencyos.db`) was completed on 2026-08-04 and independently re-verified line-by-line. It failed.
 
-Only continuous execution and observation.
+### What the audit found (verified against raw artifacts, not the summary report)
 
-### Definition of Done
+- **No idempotency**: 162 unique opportunities produced 379 executions. 64 opportunities ran 3x, 2 ran 12x, 3 ran 10x, purely because the loop re-treats already-seen opportunities as new on every fetch cycle.
+- **Rejection gates don't stick**: Opportunity `4878017272` was explicitly REJECTED by human approval (`TASK_BLOCKED`), then re-planned and approved 9 more times afterward. Opportunity `4335223464` was rejected by the quality scorer, then fully executed to completion twice more anyway.
+- **Persistence bypass**: `agencyos.db` `tasks`, `audit_log`, and `idempotency_keys` tables were confirmed 0 rows despite 379 real task executions in the log. The `approvals` (13 rows) and `budget` (10 rows) tables were only populated in a single ~4-second burst at the very end of the run — not written live — and contain degraded data (`budget.opportunity_id = 'unknown'` on all 10 rows; several `approvals` rows reference non-opportunity IDs like `'1'`, `'4'`, `'5'`).
+- **Silent 5.07-day blackout**: A 438,057-second (121.68h) gap between two consecutive log events, with no crash/SIGKILL/recovery event logged on either side — the engine just stopped and was manually restarted later.
+- **Telemetry drift**: All 7 `TELEMETRY_REPORT` events were confirmed wrong against raw counts (e.g. reporting `total_tasks: 105` when only 53 or 157 tasks had actually been planned at that point), and every report showed `approval_rejected_executions: 0` despite a confirmed real rejection.
+- **Dual, conflicting state machines**: A 6-step pipeline and a 10-step pipeline (`TASK_READY`/`TASK_EXECUTING`/`TASK_WAITING_APPROVAL`/`TASK_APPROVED`/`TASK_DELIVERED`) coexist with no single source of truth for task state.
 
-- [ ] Operates continuously for 24 hours
-- [ ] No duplicate execution
-- [ ] No approval loss
-- [ ] No task corruption
-- [ ] Automatic recovery after restart
-- [ ] Audit log remains consistent
-- [ ] RSS memory growth stays within 10% of baseline over 24 hours
-- [ ] No orphaned workers after restart
+> **Root cause for nearly all of the above**: The execution loop has no authoritative, persisted state to check before acting. Everything else (duplication, bypassed gates, drifted telemetry) follows from that one gap.
+
+### Single source of truth
+
+**Persistence Layer Rule**: No module may directly INSERT, UPDATE, or DELETE task state. All task state mutations must pass through a single persistence service/repository that is responsible for transactions, audit logging, state validation, idempotency checks, and constraint enforcement.
+
+No in-memory task state is authoritative. Every execution decision (is this opportunity new, is this task already running, was this rejected) must originate from a query against persisted database state, not a Python dict/set/counter held in the process. In-memory caches are allowed only as a read-through of the DB, never as the thing checked before acting. This is the one rule that, if violated, silently reopens every bug found in the 2026-08-04 audit — hold implementers to it explicitly.
+
+### Freeze during this phase
+
+No new opportunity sources, no new departments, no Executive Board logic, no Hermes migration, no Phase 1 work. This is the only phase in flight until 0.8E passes.
+
+### Explicit state machine
+
+One pipeline. This is the entire legal transition graph — anything not on this list is an illegal transition and must be rejected/logged, not silently allowed:
+
+```
+DISCOVERED → PLANNED → READY → EXECUTING → REVIEW → WAITING_APPROVAL
+    → APPROVED → DELIVERED → COMPLETED
+```
+
+Terminal states (zero outgoing transitions — a task in one of these can never move again without an explicit, logged manual override):
+
+- `COMPLETED`
+- `BLOCKED` (human approval rejection)
+- `QUALITY_REJECTED` (quality scorer rejection)
+- `WORKER_FAILED`
+
+Every task must reach exactly one terminal state, exactly once. A task showing `COMPLETED` twice, or `BLOCKED` followed later by `COMPLETED`, is by definition a bug this phase exists to catch.
+
+### Structure: checkpoints, in order
+
+Do not start a checkpoint until the previous one's items are re-verified against raw artifacts. Each checkpoint should be its own commit / PR so a regression is traceable to a specific layer. 0.8A is split in two deliberately — schema and live persistence are different pieces of work, and an agent asked to do both at once tends to rewrite persistence logic before the schema it depends on actually exists.
+
+#### 0.8A1 — Database Schema
+All schema changes must be versioned through numbered migration files (e.g. `001_initial.sql`, `002_add_state_constraints.sql`) and be reversible where practical. Schema changes must never require deleting production data.
+
+*Schema only. No persistence-writing code changes yet.*
+
+- [ ] `tasks.state` constrained to the explicit state machine above via `CHECK(state IN ('DISCOVERED','PLANNED','READY','EXECUTING','REVIEW','WAITING_APPROVAL','APPROVED','DELIVERED','COMPLETED','BLOCKED','QUALITY_REJECTED','WORKER_FAILED'))`.
+- [ ] `UNIQUE(opportunity_id)` on `tasks` (or `UNIQUE(key)` on `idempotency_keys`, whichever is the enforcement point).
+- [ ] `NOT NULL` on `opportunity_id` in `budget` and `approvals`.
+- [ ] `FOREIGN KEY` from `budget.opportunity_id` and `approvals.opportunity_id` back to `tasks.opportunity_id`. SQLite must reject an orphan write, not just Python.
+- [ ] Indexes on `tasks.opportunity_id`, `tasks.state`, and `audit_log.timestamp` (the columns everything in 0.8C/0.8D will query against).
+- [ ] A migration script that applies cleanly to a copy of the audited `agencyos.db` without data loss.
+- [ ] Schema verified with `PRAGMA foreign_key_check` and a manual attempt to insert an invalid row (bad state, duplicate `opportunity_id`, orphan FK) — each attempt must fail.
+
+#### 0.8A2 — Live Persistence & Idempotency
+*Only start this once 0.8A1's schema is in place and verified.*
+
+- [ ] Every state transition that mutates task state executes inside a single SQLite transaction — audit row, task update, budget row, and approval row (whichever apply) all commit together or none do:
+  ```sql
+  BEGIN;
+    INSERT INTO audit_log (...);
+    UPDATE tasks SET state = ... WHERE opportunity_id = ...;
+    INSERT INTO budget (...);      -- if applicable
+    INSERT INTO approvals (...);   -- if applicable
+  COMMIT;
+  ```
+  No sequence of `update task` ... `crash` ... `insert audit` is possible — the 2026-08-04 audit's partial/batched writes are exactly what this eliminates.
+- [ ] Row count in the `audit_log` table == event count in `audit_log.jsonl` at any point mid-run, not just at shutdown.
+- [ ] Execution eligibility is determined by SQL, not Python state. Before planning any opportunity, the scheduler must run something equivalent to:
+  ```sql
+  SELECT state FROM tasks WHERE opportunity_id = ?;
+  ```
+  If the result is `COMPLETED`, `BLOCKED`, `QUALITY_REJECTED`, or `WORKER_FAILED`, the scheduler skips it. No Python set/dict/in-memory cache may be consulted first or instead — see "Single source of truth" above. This is deliberately stricter than "add a UNIQUE constraint," because a constraint only catches the duplicate at insert time; this stops the duplicate work from starting at all.
+- [ ] `budget.opportunity_id` is populated with the real opportunity ID on every row — the FK constraint from 0.8A1 should make `'unknown'` rows impossible to insert.
+- [ ] Fresh test run: max executions per opportunity == 1, or an explicit logged retry reason for anything higher.
+
+#### 0.8B — State Machine, Scheduler & Recovery
+- [ ] Illegal transitions are rejected at the point of write (using the explicit state machine above), not just observable after the fact — an attempted transition from a terminal state raises/logs an error instead of silently succeeding.
+- [ ] Blackout/stall detection with an observable recovery lifecycle, not just a single event type. Log each of:
+  - `WATCHDOG_WARNING` — heartbeat is late but under the hard threshold
+  - `STALL_DETECTED` — threshold exceeded (e.g. 5x normal heartbeat interval) with no heartbeat or task event
+  - `RECOVERY_STARTED` — process restarted / resumed after a stall
+  - `RECOVERY_COMPLETED` — scheduler confirmed resumed from persisted state, with counts proving nothing was lost or duplicated
+- [ ] Idle heartbeat backoff: heartbeats during genuine idle periods back off (e.g. exponential up to a ceiling) instead of firing on a fixed ~34s interval regardless of `queue_depth`.
+- [ ] Crash recovery test, run explicitly, not assumed: start the engine, let it run ~5 minutes of real load, `kill -9` the process, restart it, and verify against the DB — no duplicate tasks, no missing tasks, scheduler resumes from persisted state correctly, no budget corruption, no telemetry corruption, and the `RECOVERY_STARTED`/`RECOVERY_COMPLETED` events are present. Log the before/after counts used to confirm this.
+
+#### 0.8C — Telemetry & Budget Accuracy
+- [ ] Telemetry computed from the DB, not in-memory counters. Every `TELEMETRY_REPORT` value (`total_tasks`, `successful_executions`, `approval_rejected_executions`, `total_cost`) is a live query against persisted state and matches raw counts exactly at the time it's generated.
+- [ ] Budget accuracy: `today_cumulative_spend` reconciles exactly against `SUM(worker.actual_cost + review.review_cost)` over the same window, pulled from the DB, not carried forward in memory.
+
+#### 0.8D — Automated Verification, Replay & 24h Soak
+- [ ] Build `tools/verify_audit.py agencyos.db audit_log.jsonl` — a standalone forensic verifier, so every future soak run is checked the same way this one was, without manually reading thousands of log lines. It must fail (non-zero exit) if it finds any of: duplicate opportunity IDs beyond a logged retry, telemetry mismatch vs. raw counts, orphan approvals/budget rows (no matching task), missing audit rows (DB count != JSONL count), impossible state transitions, DB/log count mismatch, budget mismatch, an unexplained heartbeat gap, or a stall with no `WATCHDOG_WARNING`/`STALL_DETECTED` event — plus two more checks:
+  - Timestamps never go backwards: `timestamp[n+1] >= timestamp[n]` for every consecutive pair of events.
+  - Exactly one terminal state per task: no `opportunity_id` may show `COMPLETED` twice, or a terminal state followed by any further transition.
+- [ ] Build `tools/replay_audit.py agencyos.db audit_log.jsonl` — reconstructs task state purely by replaying `audit_log.jsonl` from scratch, then diffs the replayed state against what's actually in `agencyos.db`. Any difference is a FAIL — this catches DB corruption or a persistence bug that the live checks above didn't.
+- [ ] 24-hour soak, re-audited from scratch. A fresh continuous run on clean artifacts (new `agencyos.db` and `audit_log.jsonl`), then both `tools/verify_audit.py` and `tools/replay_audit.py` run against it, plus a manual spot-check the same way the 2026-08-04 audit was done. Every soak going forward is: run 24h $\rightarrow$ run both tools $\rightarrow$ PASS or FAIL, not a manual log read.
+- [ ] PASS — 0.8A1 through 0.8D all hold simultaneously on the same soak run, confirmed by both tools reporting zero failures and a manual spot-check of raw `agencyos.db` + `audit_log.jsonl`.
+- [ ] `verify_audit.py` completes in under 30 seconds on a 24-hour audit.
+- [ ] `replay_audit.py` completes in under 60 seconds.
+- [ ] Scheduler heartbeat query remains under 100 ms with a 24-hour database.
+
+#### 0.8E — Regression Suite
+
+Every bug found in the forensic audit gets its own permanent test.
+
+Examples:
+- duplicate opportunity cannot execute twice
+- blocked task cannot restart
+- quality rejected task cannot restart
+- telemetry equals DB
+- audit_log DB == JSONL
+- replay has zero diffs
+- crash recovery preserves state
+- FK constraints reject invalid rows
+- illegal state transition throws
+- `UNIQUE(opportunity_id)` enforced
+
+Do not mark this phase — or any checkpoint within it — complete on the strength of a passing test suite alone (see PROJECT_STATUS.md — this has burned the project twice already). Require the raw DB + log artifacts.
+
+### Hermes gate
+
+Strictly sequential — no parallel work, no "almost done":
+
+```
+0.8A1 PASS → 0.8A2 PASS → 0.8B PASS → 0.8C PASS → 0.8D PASS → 0.8E PASS
+  → fresh 24-hour soak on clean artifacts PASS
+  → verify_audit.py: zero failures
+  → replay_audit.py: zero diffs
+  → manual audit PASS
+  → only then: Hermes/Phase 1 begins
+```
+
+No exceptions for "it's probably fine now" — re-run both tools on fresh data before Hermes work starts.
 
 ---
 
@@ -302,6 +443,9 @@ builds it early:
 - Most of Platform Services (auth, notifications, storage as shared modules)
 - 6 of the 8 original Business Units
 - Executive Board as reasoning agents (stays rule-based until proven insufficient)
+- Hermes migration (planned for right before Phase 1, per `PROJECT_STATUS.md`
+  — but not before Phase 0.8's Hermes gate passes; migrating an unstable
+  engine just moves the same bugs onto a new platform)
 
 There is no dedicated "Infrastructure phase." Infrastructure is extracted
 into `shared/` only when two real callers need the same thing — see the
@@ -312,11 +456,35 @@ Governing Rule in ARCHITECTURE.md.
 ## Next Prompt for the Agentic IDE
 
 ```
-Read ARCHITECTURE.md and ROADMAP.md completely. Treat ARCHITECTURE.md as
-the stable source of truth and ROADMAP.md as the implementation plan.
-Implement only Phase 0. Do not anticipate future phases. Do not create
-abstractions, folders, services, or interfaces unless they are required by
-Phase 0 or explicitly mandated by the architecture. When faced with
-multiple implementation choices, prefer the simplest solution that
-satisfies the Design Principles and Definition of Done.
+Read ARCHITECTURE.md, ROADMAP.md, and PROJECT_STATUS.md completely. Treat
+ARCHITECTURE.md as the stable source of truth and ROADMAP.md as the
+implementation plan. Phases 0 through 0.6 are done and should not be
+touched.
+
+FIRST: resolve the Phase 0.7 verification flag before doing anything else.
+Phase 0.7 claims persistent task state, idempotency, and no-duplicate-
+execution-after-restart — but the Phase 0.8 forensic audit (2026-08-04)
+found the opposite on a real VPS run. Determine, with evidence (git log /
+deployment history / raw DB+log artifacts from whatever run Phase 0.7's
+checkboxes were based on), whether the VPS build used for the Phase 0.8
+soak actually contained Phase 0.7's code. Report what you find before
+writing any new code. Do not silently assume either checkmark set is
+correct.
+
+THEN: work Phase 0.8's checkpoints in order — 0.8A1 (Database Schema),
+0.8A2 (Live Persistence & Idempotency), 0.8B (State Machine, Scheduler &
+Recovery), 0.8C (Telemetry & Budget Accuracy), 0.8D (Automated
+Verification, Replay & 24h Soak), 0.8E (Regression Suite). One commit/PR
+per checkpoint. Do not start a checkpoint until the previous one's items
+are re-verified against raw `agencyos.db` + `audit_log.jsonl` from a fresh
+run — not a test suite alone. Do not touch Phase 1 or later. Do not
+migrate to Hermes.
+
+Governing rule: no in-memory task state is authoritative — every execution
+decision must originate from a SQL query against persisted DB state. State
+transitions that mutate task state happen inside a single SQLite
+transaction. When faced with multiple implementation choices, prefer the
+simplest solution that satisfies the Design Principles in ARCHITECTURE.md
+and closes the specific root cause in the Phase 0.8 audit findings — do
+not build speculative abstractions beyond what closes those gaps.
 ```

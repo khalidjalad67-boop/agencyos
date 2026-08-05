@@ -32,38 +32,46 @@ def run_startup_recovery(db: Database) -> Dict[str, Any]:
                 task["worker_result"] = worker_result.to_dict()
                 task["review_result"] = review_result.to_dict()
                 task["state"] = "WAITING_APPROVAL"
-                db.save_task(task)
-                db.save_approval(f"appr-{task_id}", task["opportunity_id"], "PENDING", "Recovered pending approval after restart")
-                db.log_event("STARTUP_RECOVERY_BOTH_CACHE_RECOVERED", {
-                    "task_id": task_id,
-                    "interrupted_phase": "AFTER_WORKER_AND_REVIEWER_COMPLETION",
-                    "worker_key_found": True,
-                    "reviewer_key_found": True,
-                    "recovered_state": "WAITING_APPROVAL"
-                })
+                db.execute_atomic_transition(
+                    task,
+                    audit_event=("STARTUP_RECOVERY_BOTH_CACHE_RECOVERED", {
+                        "task_id": task_id,
+                        "interrupted_phase": "AFTER_WORKER_AND_REVIEWER_COMPLETION",
+                        "worker_key_found": True,
+                        "reviewer_key_found": True,
+                        "recovered_state": "WAITING_APPROVAL"
+                    }),
+                    approval_record=(f"appr-{task_id}", "PENDING", "Recovered pending approval after restart", None)
+                )
                 recovered_tasks += 1
             elif worker_result:
                 # Worker completed before crash, reviewer did not finish
                 task["worker_result"] = worker_result.to_dict()
-                task["state"] = "REVIEWED"
-                db.save_task(task)
-                db.log_event("STARTUP_RECOVERY_WORKER_CACHE_RECOVERED", {
-                    "task_id": task_id,
-                    "interrupted_phase": "AFTER_WORKER_COMPLETION_BEFORE_REVIEWER",
-                    "worker_key_found": True,
-                    "reviewer_key_found": False,
-                    "recovered_state": "REVIEWED"
-                })
+                task["state"] = "REVIEW"
+                db.execute_atomic_transition(
+                    task,
+                    audit_event=("STARTUP_RECOVERY_WORKER_CACHE_RECOVERED", {
+                        "task_id": task_id,
+                        "interrupted_phase": "AFTER_WORKER_COMPLETION_BEFORE_REVIEWER",
+                        "worker_key_found": True,
+                        "reviewer_key_found": False,
+                        "recovered_state": "REVIEW"
+                    })
+                )
                 recovered_tasks += 1
             else:
                 # Worker did not finish before crash, reset state to READY to resume cleanly
-                db.update_task_state(task_id, "READY", "Reset to READY by startup recovery routine")
-                db.log_event("STARTUP_RECOVERY_PRE_WORKER_KILL_RESET", {
-                    "task_id": task_id,
-                    "interrupted_phase": "BEFORE_WORKER_COMPLETION",
-                    "worker_key_found": False,
-                    "reset_state": "READY"
-                })
+                task["state"] = "READY"
+                task["error_reason"] = "Reset to READY by startup recovery routine"
+                db.execute_atomic_transition(
+                    task,
+                    audit_event=("STARTUP_RECOVERY_PRE_WORKER_KILL_RESET", {
+                        "task_id": task_id,
+                        "interrupted_phase": "BEFORE_WORKER_COMPLETION",
+                        "worker_key_found": False,
+                        "reset_state": "READY"
+                    })
+                )
                 reset_tasks += 1
         elif state == "WAITING_APPROVAL":
             # Ensure pending approval exists in DB

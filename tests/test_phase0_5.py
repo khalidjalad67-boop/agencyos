@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import json
 import unittest
 from typing import List
@@ -14,6 +16,9 @@ from main import run_phase0_loop
 
 TEST_LOG_FILE = "test_phase0_5_audit_log.jsonl"
 TEST_CONFIG_FILE = "config/test_settings.yaml"
+
+_SKIP_NETWORK = os.environ.get("AGENTOS_SKIP_NETWORK_TESTS") == "1"
+_SKIP_NETWORK_REASON = "Network tests skipped via AGENTOS_SKIP_NETWORK_TESTS=1"
 
 class TestPhase05Hardening(unittest.TestCase):
     
@@ -82,6 +87,7 @@ class TestPhase05Hardening(unittest.TestCase):
         self.assertEqual(result.http_status, 500)
         self.assertIn("crash isolated", result.error_reason.lower())
 
+    @unittest.skipIf(_SKIP_NETWORK, _SKIP_NETWORK_REASON)
     def test_retry_and_timeout_resilience(self):
         fetcher = OpportunityFetcher(max_retries=2)
         opps = fetcher.fetch_opportunities(limit=3)
@@ -118,6 +124,7 @@ class TestPhase05Hardening(unittest.TestCase):
         approval_rejected_count = 0
         
         for opp in opportunities:
+            approval_gate.db.execute_atomic_transition({"task_id": opp.id, "opportunity_id": opp.id, "state": "DISCOVERED", "created_at": 1.0, "updated_at": 1.0})
             tspec = planner.plan(opp)
             
             # Force high cost for opp 3 to trigger budget block

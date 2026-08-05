@@ -76,6 +76,17 @@ def run_phase0_loop(
             "labels": opp.payload.get("labels", [])
         })
 
+        budget_guard.db.execute_atomic_transition({
+            "task_id": opp.id,
+            "opportunity_id": opp.id,
+            "state": "DISCOVERED",
+            "source": opp.source,
+            "repo": repo,
+            "title": opp.title,
+            "description": opp.description,
+            "payload": opp.payload
+        })
+
         # 1. OPTIONAL QUALITY FILTER (Step 4 only - Quality Scorer receives RAW Opportunity before Planning)
         if quality_scorer is not None:
             is_valid, qual_score, qual_reason = quality_scorer.evaluate(opp)
@@ -181,7 +192,7 @@ def run_phase0_loop(
         task_cost = round(worker_result.actual_cost + review_result.review_cost, 6)
         total_cost += task_cost
         total_execution_time += worker_result.execution_time_sec
-        budget_guard.record_spend(task_cost)
+        budget_guard.record_spend(task_cost, opportunity_id=opp.id)
         repo_telemetry[repo]["cost"] += task_cost
         
         # 6. Approval Gate
@@ -263,7 +274,7 @@ def run_phase0_loop(
         },
         "execution_records": execution_records
     }
-    
+
     logger.log_event("TELEMETRY_REPORT", {
         "summary": f"Telemetry Report: {successful_executions}/{len(opportunities)} succeeded across {len(repo_telemetry)} repos. Total Cost: ${total_cost:.6f}",
         "telemetry": telemetry_report["telemetry"]
@@ -293,7 +304,8 @@ def run_phase0_7_autonomous_loop(
     db_path: str = "agencyos.db",
     num_opportunities: int = 105,
     interval_sec: float = 30.0,
-    max_ticks: Optional[int] = None
+    max_ticks: Optional[int] = None,
+    opportunities_override: Optional[List[Opportunity]] = None
 ) -> Dict[str, Any]:
     """Executes Phase 0.7 restart-safe autonomous operations service using persistent SQLite database.
     If max_ticks is None, runs continuously on interval (for 24h stability validation).
@@ -312,18 +324,18 @@ def run_phase0_7_autonomous_loop(
     recovery_summary = run_startup_recovery(db)
     print(f"[STARTUP RECOVERY] Summary: {recovery_summary}")
 
-    scheduler = Scheduler(db, interval_sec=interval_sec)
     engine = AutonomousEngine(db)
+    scheduler = Scheduler(db, interval_sec=interval_sec, watchdog=engine.watchdog)
     health = HealthMonitor(db, engine.watchdog)
 
     tick = 0
     try:
         while True:
             tick += 1
-            scheduled_ids = scheduler.tick(limit=num_opportunities)
+            scheduled_ids, next_interval = scheduler.tick(opportunities_override=opportunities_override, limit=num_opportunities)
             print(f"[SCHEDULER TICK {tick}] Scheduled {len(scheduled_ids)} new task execution events.")
 
-            unfinished_states = ("DISCOVERED", "PLANNED", "READY", "EXECUTING", "REVIEWED", "WAITING_APPROVAL")
+            unfinished_states = ("DISCOVERED", "PLANNED", "READY", "EXECUTING", "REVIEW", "WAITING_APPROVAL")
             tasks_to_process = []
             for state in unfinished_states:
                 tasks_to_process.extend(db.get_tasks_by_state(state))
@@ -338,8 +350,8 @@ def run_phase0_7_autonomous_loop(
             if max_ticks is not None and tick >= max_ticks:
                 break
 
-            print(f"Sleeping {interval_sec}s until next scheduler tick... (Press Ctrl+C to stop)")
-            time.sleep(interval_sec)
+            print(f"Sleeping {next_interval:.1f}s until next scheduler tick... (Press Ctrl+C to stop)")
+            time.sleep(next_interval)
     except KeyboardInterrupt:
         print("\n[AUTONOMOUS ENGINE] Gracefully shutting down service loop.")
 

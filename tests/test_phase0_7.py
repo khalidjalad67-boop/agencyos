@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from typing import List, Dict, Any
 
-from src.db import Database
+from src.db import Database, resolve_db_path
 from src.opportunity import Opportunity
 from src.scheduler import Scheduler
 from src.engine import AutonomousEngine
@@ -25,15 +25,17 @@ TEST_LOG_FILE = "test_phase0_7_audit.jsonl"
 class TestPhase07AutonomousOperations(unittest.TestCase):
 
     def setUp(self):
-        if os.path.exists(TEST_DB_FILE):
-            os.remove(TEST_DB_FILE)
+        target_db = resolve_db_path(TEST_DB_FILE)
+        if os.path.exists(target_db):
+            os.remove(target_db)
         if os.path.exists(TEST_LOG_FILE):
             os.remove(TEST_LOG_FILE)
         self.db = Database(TEST_DB_FILE)
 
     def tearDown(self):
-        if os.path.exists(TEST_DB_FILE):
-            os.remove(TEST_DB_FILE)
+        target_db = resolve_db_path(TEST_DB_FILE)
+        if os.path.exists(target_db):
+            os.remove(target_db)
         if os.path.exists(TEST_LOG_FILE):
             os.remove(TEST_LOG_FILE)
 
@@ -44,13 +46,13 @@ class TestPhase07AutonomousOperations(unittest.TestCase):
             Opportunity(id="opp-102", title="Task 2", description="Description 2", source="test_source", payload={"repo": "repo/b"})
         ]
         
-        first_tick = scheduler.tick(opportunities_override=test_opps)
+        first_tick, _ = scheduler.tick(opportunities_override=test_opps)
         self.assertEqual(len(first_tick), 2)
         self.assertIn("opp-101", first_tick)
         self.assertIn("opp-102", first_tick)
 
         # Duplicate tick should be ignored
-        second_tick = scheduler.tick(opportunities_override=test_opps)
+        second_tick, _ = scheduler.tick(opportunities_override=test_opps)
         self.assertEqual(len(second_tick), 0)
 
         discovered = self.db.get_tasks_by_state("DISCOVERED")
@@ -79,7 +81,7 @@ class TestPhase07AutonomousOperations(unittest.TestCase):
         # Direct database assertion on tasks table
         task_in_db = self.db.get_task("opp-empty-body")
         self.assertIsNotNone(task_in_db)
-        self.assertEqual(task_in_db["state"], "CANCELLED")
+        self.assertEqual(task_in_db["state"], "QUALITY_REJECTED")
         self.assertIn("QUALITY_REJECTED", task_in_db["error_reason"])
         
         # Verify it NEVER reached PLANNED state
@@ -97,7 +99,7 @@ class TestPhase07AutonomousOperations(unittest.TestCase):
             "description": "Detailed problem description covering bug fix.",
             "payload": {"repo": "repo/a", "labels": ["bug"]}
         }
-        self.db.save_task(task_data)
+        self.db.execute_atomic_transition(task_data)
 
         engine = AutonomousEngine(self.db, log_filepath=TEST_LOG_FILE)
         res1 = engine.process_task("opp-billing-test")
@@ -106,10 +108,9 @@ class TestPhase07AutonomousOperations(unittest.TestCase):
         initial_spend = self.db.get_today_spend(engine.budget_guard.today_date_str)
         self.assertGreater(initial_spend, 0.0)
 
-        # Reset task state to EXECUTING to test idempotency guard re-run
-        task = self.db.get_task("opp-billing-test")
-        task["state"] = "EXECUTING"
-        self.db.save_task(task)
+        # Reset task state to EXECUTING via DB transaction to test idempotency guard re-run
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE tasks SET state = 'EXECUTING' WHERE task_id = 'opp-billing-test'")
 
         # Re-process task
         res2 = engine.process_task("opp-billing-test")
@@ -174,6 +175,7 @@ class TestPhase07AutonomousOperations(unittest.TestCase):
         self.assertEqual(today_spend, 0.1234)
 
         # Subsequent spend writes directly to SQLite budget table
+        self.db.execute_atomic_transition({"task_id": "opp-migrated", "opportunity_id": "opp-migrated", "state": "DISCOVERED", "created_at": 1.0, "updated_at": 1.0})
         bg.record_spend(0.0500, "opp-migrated")
         new_spend = self.db.get_today_spend(today_str)
         self.assertEqual(new_spend, 0.1734)
@@ -188,7 +190,7 @@ class TestPhase07AutonomousOperations(unittest.TestCase):
         # Step 1: Initialize task in DISCOVERED state in SQLite DB
         task_id = "crash-test-task-1"
         self.db.log_event("SIGKILL_CRASH_TEST_STARTED", {"task_id": task_id})
-        self.db.save_task({
+        self.db.execute_atomic_transition({
             "task_id": task_id,
             "opportunity_id": task_id,
             "state": "DISCOVERED",
@@ -213,8 +215,12 @@ task = db.get_task({json.dumps(task_id)})
 opp = Opportunity(id=task["opportunity_id"], title=task["title"], description=task["description"], source=task["source"], payload=task["payload"])
 task_spec = engine.planner.plan(opp)
 task["task_spec"] = task_spec.to_dict()
+task["state"] = "PLANNED"
+db.execute_atomic_transition(task)
+task["state"] = "READY"
+db.execute_atomic_transition(task)
 task["state"] = "EXECUTING"
-db.save_task(task)
+db.execute_atomic_transition(task)
 
 print("STATE_IS_EXECUTING", flush=True)
 time.sleep(30)
@@ -224,8 +230,9 @@ time.sleep(30)
             script_path = f.name
 
         try:
-            # Launch subprocess
-            proc = subprocess.Popen([sys.executable, script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            env = dict(os.environ)
+            env["AGENTOS_TEST_MODE"] = "1"
+            proc = subprocess.Popen([sys.executable, script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
             
             # Wait for signal that process is in EXECUTING state
             while True:
