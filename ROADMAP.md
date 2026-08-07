@@ -69,7 +69,7 @@ Before building kernel abstractions or adding departments, harden the core loop 
 
 ---
 
-## Phase 0.7 — Autonomous Operations [COMPLETE ✅]
+## Phase 0.7 — Autonomous Operations [UNVERIFIED — SUPERSEDED BY PHASE 0.8]
 
 Transition AgencyOS from a manually triggered execution loop into a restart-safe autonomous service that operates without a live terminal while preserving correctness across failures.
 
@@ -210,17 +210,27 @@ Required tables:
 
 ### Definition of Done
 
-- [x] Scheduler executes tasks automatically on interval
-- [x] Task state survives restart
-- [x] Approval queue survives restart
-- [x] Watchdog backs off repeated failures
-- [x] Disabled sources recover after cooldown
-- [x] No duplicate execution after restart
-- [x] No duplicate Worker or Reviewer billing after restart
-- [x] Verified by forcibly terminating the process (SIGKILL / kill -9) during EXECUTING and confirming correct recovery
-- [x] Budget enforcement remains correct after restart
-- [x] Live GitHub fetching from Phase 0.6 remains unchanged in normal operation
-- [x] Fixtures/mocks are used ONLY inside the SIGKILL crash-recovery test harness to isolate state-machine correctness from network variability
+None of the items below are trustworthy as written — every one of them
+is exactly what the verification flag above found broken in practice.
+Superseded by Phase 0.8's checkpointed DoD, which re-establishes each of
+these guarantees with independent verification against raw artifacts,
+not self-reported checkmarks. Left unchecked deliberately, as a record of
+what was claimed vs. what held up:
+
+- [ ] Scheduler executes tasks automatically on interval
+- [ ] Task state survives restart
+- [ ] Approval queue survives restart
+- [ ] Watchdog backs off repeated failures
+- [ ] Disabled sources recover after cooldown
+- [ ] No duplicate execution after restart
+- [ ] No duplicate Worker or Reviewer billing after restart
+- [ ] Verified by forcibly terminating the process (SIGKILL / kill -9) during EXECUTING and confirming correct recovery
+- [ ] Budget enforcement remains correct after restart
+- [ ] Live GitHub fetching from Phase 0.6 remains unchanged in normal operation
+- [ ] Fixtures/mocks are used ONLY inside the SIGKILL crash-recovery test harness to isolate state-machine correctness from network variability
+
+See Phase 0.8's checkpoints (0.8A1 through 0.8E) for the actual,
+independently-verified status of each of these guarantees.
 
 ---
 
@@ -457,34 +467,54 @@ Governing Rule in ARCHITECTURE.md.
 
 ```
 Read ARCHITECTURE.md, ROADMAP.md, and PROJECT_STATUS.md completely. Treat
-ARCHITECTURE.md as the stable source of truth and ROADMAP.md as the
-implementation plan. Phases 0 through 0.6 are done and should not be
-touched.
+ARCHITECTURE.md as the stable source of truth, ROADMAP.md as the
+implementation plan, and PROJECT_STATUS.md as the current session state
+— it is ahead of what's checked into ROADMAP.md's checkpoint text in a
+few places, so trust it for "what's actually done" and ROADMAP.md for
+"what each checkpoint requires."
 
-FIRST: resolve the Phase 0.7 verification flag before doing anything else.
-Phase 0.7 claims persistent task state, idempotency, and no-duplicate-
-execution-after-restart — but the Phase 0.8 forensic audit (2026-08-04)
-found the opposite on a real VPS run. Determine, with evidence (git log /
-deployment history / raw DB+log artifacts from whatever run Phase 0.7's
-checkboxes were based on), whether the VPS build used for the Phase 0.8
-soak actually contained Phase 0.7's code. Report what you find before
-writing any new code. Do not silently assume either checkmark set is
-correct.
+Phases 0 through 0.6 are done. Phase 0.7 is resolved — do NOT re-open
+the reconciliation investigation; PROJECT_STATUS.md already documents the
+finding (AutonomousEngine itself reproduced the bugs, not just wasn't
+wired in) and ROADMAP.md's Phase 0.7 section has been corrected to match.
+Phase 0.8's checkpoints 0.8A1 through 0.8C are COMPLETE and independently
+verified — do not redo, re-litigate, or re-implement any of them. **0.8D
+is NOT complete** — its tools (verify_audit.py, replay_audit.py) are
+built and independently verified against real corruption cases, but per
+ROADMAP.md's own DoD, 0.8D's final and defining item is a clean 24-hour
+soak with both tools reporting zero failures against real output ("PASS
+— 0.8A1 through 0.8D all hold simultaneously on the same soak run") —
+that has not happened yet. Do not mark 0.8D complete, do not start 0.8E
+formally, and do not touch the verifier/db/schema code without checking
+PROJECT_STATUS.md first — there is almost certainly already a specific,
+hard-won reason those look the way they do.
 
-THEN: work Phase 0.8's checkpoints in order — 0.8A1 (Database Schema),
-0.8A2 (Live Persistence & Idempotency), 0.8B (State Machine, Scheduler &
-Recovery), 0.8C (Telemetry & Budget Accuracy), 0.8D (Automated
-Verification, Replay & 24h Soak), 0.8E (Regression Suite). One commit/PR
-per checkpoint. Do not start a checkpoint until the previous one's items
-are re-verified against raw `agencyos.db` + `audit_log.jsonl` from a fresh
-run — not a test suite alone. Do not touch Phase 1 or later. Do not
-migrate to Hermes.
+CURRENT STATE: a second 24h+ soak is running on the VPS (started
+2026-08-07 14:52:33 UTC, target completion 2026-08-08 14:52:33 UTC) as
+the official Phase 0.8 evidence run — a first soak ran clean
+operationally but was invalidated by a JSONL-sync gap since fixed (see
+PROJECT_STATUS.md for the full incident). The IDE does not control the
+VPS and should not attempt to. Do not touch main.py, src/db.py,
+src/logger.py, src/scheduler.py, src/engine.py, or anything else that
+could affect what's currently running, until the soak completes and its
+results are reviewed.
 
-Governing rule: no in-memory task state is authoritative — every execution
-decision must originate from a SQL query against persisted DB state. State
-transitions that mutate task state happen inside a single SQLite
-transaction. When faced with multiple implementation choices, prefer the
-simplest solution that satisfies the Design Principles in ARCHITECTURE.md
-and closes the specific root cause in the Phase 0.8 audit findings — do
-not build speculative abstractions beyond what closes those gaps.
+WHAT TO WORK ON NOW: pre-emptive 0.8E (Regression Suite) test scaffolding
+only — 0.8E formally starts once 0.8D's soak passes, but the tests
+themselves target bugs already found and fixed, so writing them now
+doesn't depend on the soak's outcome. One permanent test per historical
+bug already found across this phase (the list is long and already known:
+0.8A1's 14-stub-row test isolation leak, 0.8A2's worker-idempotency NULL
+bug, 0.8B's missing REVIEW→REVIEW transition and watchdog warning-reset
+bug, 0.8C's BLOCKED double-counting, 0.8D's dispatch-table gap and
+interval off-by-one, the JSONL-sync gap and its AuditLogger double-write
+near-miss, and the reverted opportunity.py mock-fallback incident). These
+tests exercise already-fixed code — do not change the underlying
+implementation to make a new test pass; if a regression test fails
+against current code, that's a real regression, report it before
+touching anything.
+
+Do not start Phase 1 or Hermes migration. The Hermes gate requires the
+soak to complete cleanly, both verification tools to run clean against
+its real output, and a manual audit — none of which exist yet.
 ```
