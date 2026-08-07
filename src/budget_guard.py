@@ -5,7 +5,7 @@ import yaml
 from datetime import datetime, timezone
 from typing import Tuple, Dict, Any, Optional
 from src.planner import TaskSpec
-from src.db import Database
+from src.db import Database, is_in_test_mode, resolve_log_path, DEFAULT_LOG_PATH
 
 class BudgetGuard:
     """Pre-execution budget guard enforcing per-task ceilings and persistent daily spend limits.
@@ -13,11 +13,11 @@ class BudgetGuard:
     strictly as a one-time migration path for pre-existing spend when SQLite budget table is empty.
     """
 
-    def __init__(self, config_path: str = "config/settings.yaml", log_filepath: str = "audit_log.jsonl", db: Optional[Database] = None):
+    def __init__(self, config_path: str = "config/settings.yaml", log_filepath: str = DEFAULT_LOG_PATH, db: Optional[Database] = None):
         self.config_path = config_path
-        self.log_filepath = log_filepath
+        self.db = db or Database(log_filepath=log_filepath)
+        self.log_filepath = self.db.log_filepath if hasattr(self.db, "log_filepath") else resolve_log_path(log_filepath)
         self.config = self._load_config()
-        self.db = db or Database()
 
         self.per_task_limit = float(self.config.get("budget", {}).get("per_task_limit", 0.25))
         self.daily_limit = float(self.config.get("budget", {}).get("daily_limit", 2.00))
@@ -25,8 +25,8 @@ class BudgetGuard:
 
         self.today_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Single source of truth initialization
-        if self.db.is_budget_empty() and os.path.exists(self.log_filepath):
+        # Single source of truth initialization (only in production)
+        if not is_in_test_mode() and self.db.is_budget_empty() and os.path.exists(self.log_filepath):
             # One-time migration path for legacy audit_log.jsonl
             legacy_spend = self._calculate_legacy_today_spend()
             if legacy_spend > 0:

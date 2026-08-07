@@ -33,6 +33,8 @@ class AutonomousEngine:
     ):
         self.db = db
         self.logger = logger or AuditLogger(log_filepath=log_filepath, db=self.db)
+        if hasattr(self.db, "log_filepath"):
+            self.db.log_filepath = self.logger.log_filepath
         self.quality_scorer = quality_scorer or OpportunityQualityScorer()
         self.planner = planner or Planner()
         self.budget_guard = budget_guard or BudgetGuard(db=self.db, log_filepath=log_filepath)

@@ -126,7 +126,7 @@ class TestPhase08A2Persistence(unittest.TestCase):
         conn.close()
 
     def test_live_engine_audit_log_jsonl_matches_sqlite(self):
-        """Verifies that running a real engine.process_task() call end-to-end results in audit_log.jsonl line count matching SQLite audit_log row count."""
+        """Verifies that running a real engine.process_task() call end-to-end plus direct AuditLogger.log_event calls results in audit_log.jsonl line count matching SQLite audit_log row count."""
         task_id = "live-opp-jsonl-sync"
         
         self.db.execute_atomic_transition({
@@ -141,7 +141,9 @@ class TestPhase08A2Persistence(unittest.TestCase):
         })
         
         engine = self._create_mock_engine()
+        engine.logger.log_event("SCHEDULER_HEARTBEAT", {"queue_depth": 1, "expected_interval": 30.0})
         result = engine.process_task(task_id)
+        engine.logger.log_event("SCHEDULER_HEARTBEAT", {"queue_depth": 0, "expected_interval": 60.0})
         
         self.assertEqual(result["status"], "COMPLETED")
         
@@ -156,6 +158,33 @@ class TestPhase08A2Persistence(unittest.TestCase):
         
         self.assertGreater(sqlite_count, 0)
         self.assertEqual(len(jsonl_lines), sqlite_count, f"JSONL line count ({len(jsonl_lines)}) must match SQLite audit_log row count ({sqlite_count})")
+
+    def test_audit_logger_direct_log_event_single_jsonl_write(self):
+        """Verifies that calling AuditLogger.log_event directly writes exactly ONE line to audit_log.jsonl and ONE row to SQLite audit_log."""
+        from src.logger import AuditLogger
+        logger = AuditLogger(log_filepath=self.test_log_path, db=self.db)
+        logger.log_event("SCHEDULER_HEARTBEAT", {"queue_depth": 0, "expected_interval": 30.0})
+
+        conn = sqlite3.connect(self.test_db_path)
+        sqlite_count = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+        conn.close()
+
+        with open(self.test_log_path, "r", encoding="utf-8") as f:
+            jsonl_lines = [line for line in f if line.strip()]
+
+        self.assertEqual(sqlite_count, 1, f"Expected 1 SQLite audit row, got {sqlite_count}")
+        self.assertEqual(len(jsonl_lines), 1, f"Expected 1 JSONL line for direct AuditLogger call, got {len(jsonl_lines)}")
+
+    def test_log_filepath_resolution_in_test_mode(self):
+        """Verifies that relative log_filepath is deterministically resolved to tests/.temp_test_dbs under test mode."""
+        from src.db import resolve_log_path
+        resolved = resolve_log_path("audit_log.jsonl")
+        expected_suffix = os.path.join("tests", ".temp_test_dbs", "audit_log.jsonl")
+        self.assertTrue(resolved.endswith(expected_suffix), f"Resolved path {resolved} must end with {expected_suffix}")
+
+        db = Database("rel_test.db", log_filepath="rel_audit.jsonl")
+        self.assertTrue(db.log_filepath.endswith(os.path.join("tests", ".temp_test_dbs", "rel_audit.jsonl")),
+                        f"Database log_filepath {db.log_filepath} must be isolated in test mode temp directory")
 
     def test_restart_idempotency_prevents_reexecution_and_rebilling(self):
         """Verifies that re-running process_task on a completed task post-restart hits terminal state guard, avoiding re-execution & duplicate billing."""

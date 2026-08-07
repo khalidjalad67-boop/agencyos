@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Dict, Any, List, Optional, Tuple, Set
 
 DEFAULT_DB_PATH = "agencyos.db"
+DEFAULT_LOG_PATH = "audit_log.jsonl"
 
 def get_project_root() -> str:
     """Returns the absolute path to the AgentOS project root directory."""
@@ -30,6 +31,20 @@ def resolve_db_path(db_path: str = DEFAULT_DB_PATH) -> str:
         return os.path.join(test_temp_dir, db_path)
         
     return os.path.join(get_project_root(), db_path)
+
+def resolve_log_path(log_path: str = DEFAULT_LOG_PATH) -> str:
+    """Resolves audit log JSONL filepath deterministically. If in test mode and requesting a relative log path,
+    isolates to a temporary test directory to prevent test suite from touching production audit log file.
+    """
+    if os.path.isabs(log_path):
+        return log_path
+    
+    if is_in_test_mode() and not os.environ.get("AGENTOS_ALLOW_PROD_DB"):
+        test_temp_dir = os.path.join(get_project_root(), "tests", ".temp_test_dbs")
+        os.makedirs(test_temp_dir, exist_ok=True)
+        return os.path.join(test_temp_dir, log_path)
+        
+    return os.path.join(get_project_root(), log_path)
 
 LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
     # First write — no prior row
@@ -70,9 +85,9 @@ class InvalidStateTransitionError(Exception):
 class Database:
     """Persistent SQLite Database Manager handling tasks, approvals, idempotency_keys, audit_log, and budget tables."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH, log_filepath: str = "audit_log.jsonl"):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, log_filepath: str = DEFAULT_LOG_PATH):
         self.db_path = resolve_db_path(db_path)
-        self.log_filepath = log_filepath
+        self.log_filepath = resolve_log_path(log_filepath)
         self._init_db()
 
     @contextmanager
@@ -211,7 +226,7 @@ class Database:
         if audit_event:
             event_type, payload = audit_event
             from src.logger import AuditLogger
-            AuditLogger(log_filepath=self.log_filepath).write_jsonl(event_type, payload, timestamp=now)
+            AuditLogger(log_filepath=self.log_filepath, db=self).write_jsonl(event_type, payload, timestamp=now)
 
 
 
@@ -319,7 +334,7 @@ class Database:
             """, (event_type, json.dumps(payload), now))
             conn.commit()
         from src.logger import AuditLogger
-        AuditLogger(log_filepath=self.log_filepath).write_jsonl(event_type, payload, timestamp=now)
+        AuditLogger(log_filepath=self.log_filepath, db=self).write_jsonl(event_type, payload, timestamp=now)
 
     def get_audit_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self._connection() as conn:
