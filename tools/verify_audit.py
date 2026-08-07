@@ -198,14 +198,14 @@ def verify_audit(db_path: str, log_path: str) -> Tuple[bool, List[str]]:
 
             if last_hb_ts > 0.0:
                 gap = ts - last_hb_ts
-                if gap > 5.0 * last_expected_interval:
+                if gap > 5.0 * expected_interval:
                     has_stall = any(r["event_type"] == "STALL_DETECTED" and last_hb_ts <= float(r["timestamp"]) <= ts for r in db_audit_rows)
                     if not has_stall:
-                        errors.append(f"Unexplained heartbeat gap ({gap:.1f}s > 5x interval {last_expected_interval:.1f}s) between timestamps {last_hb_ts:.1f} and {ts:.1f} without STALL_DETECTED event.")
-                elif gap > 2.0 * last_expected_interval:
+                        errors.append(f"Unexplained heartbeat gap ({gap:.1f}s > 5x interval {expected_interval:.1f}s) between timestamps {last_hb_ts:.1f} and {ts:.1f} without STALL_DETECTED event.")
+                elif gap > 2.0 * expected_interval:
                     has_warn = any(r["event_type"] == "WATCHDOG_WARNING" and last_hb_ts <= float(r["timestamp"]) <= ts for r in db_audit_rows)
                     if not has_warn:
-                        errors.append(f"Unexplained heartbeat gap ({gap:.1f}s > 2x interval {last_expected_interval:.1f}s) between timestamps {last_hb_ts:.1f} and {ts:.1f} without WATCHDOG_WARNING event.")
+                        errors.append(f"Unexplained heartbeat gap ({gap:.1f}s > 2x interval {expected_interval:.1f}s) between timestamps {last_hb_ts:.1f} and {ts:.1f} without WATCHDOG_WARNING event.")
             last_hb_ts = ts
             last_expected_interval = expected_interval
 

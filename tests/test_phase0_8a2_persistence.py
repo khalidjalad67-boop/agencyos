@@ -125,6 +125,38 @@ class TestPhase08A2Persistence(unittest.TestCase):
         
         conn.close()
 
+    def test_live_engine_audit_log_jsonl_matches_sqlite(self):
+        """Verifies that running a real engine.process_task() call end-to-end results in audit_log.jsonl line count matching SQLite audit_log row count."""
+        task_id = "live-opp-jsonl-sync"
+        
+        self.db.execute_atomic_transition({
+            "task_id": task_id,
+            "opportunity_id": task_id,
+            "state": "DISCOVERED",
+            "source": "github_issues",
+            "repo": "test/repo",
+            "title": "Live JSONL audit sync verification task",
+            "description": "Verification that JSONL lines match SQLite audit rows.",
+            "payload": {"repo": "test/repo", "labels": []}
+        })
+        
+        engine = self._create_mock_engine()
+        result = engine.process_task(task_id)
+        
+        self.assertEqual(result["status"], "COMPLETED")
+        
+        conn = sqlite3.connect(self.test_db_path)
+        cursor = conn.cursor()
+        sqlite_count = cursor.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+        conn.close()
+        
+        self.assertTrue(os.path.exists(self.test_log_path))
+        with open(self.test_log_path, "r", encoding="utf-8") as f:
+            jsonl_lines = [line for line in f if line.strip()]
+        
+        self.assertGreater(sqlite_count, 0)
+        self.assertEqual(len(jsonl_lines), sqlite_count, f"JSONL line count ({len(jsonl_lines)}) must match SQLite audit_log row count ({sqlite_count})")
+
     def test_restart_idempotency_prevents_reexecution_and_rebilling(self):
         """Verifies that re-running process_task on a completed task post-restart hits terminal state guard, avoiding re-execution & duplicate billing."""
         task_id = "restart-opp-200"

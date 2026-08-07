@@ -413,5 +413,51 @@ class TestPhase08DVerifier(unittest.TestCase):
         passed, errors = verify_audit(db_path, log_path)
         self.assertTrue(passed, f"verify_audit failed on legitimate backoff sequence: {errors}")
 
+    def test_heartbeat_backoff_and_stall_verification(self):
+        """Verifies that a legitimate backoff sequence (30->60->120->240) is NOT flagged by verify_audit,
+        while a subsequent genuine stall gap without backoff justification IS caught.
+        """
+        db_path = os.path.join(self.temp_dir, "hb_stall_test.db")
+        log_path = os.path.join(self.temp_dir, "hb_stall_test.jsonl")
+        db = Database(db_path, log_filepath=log_path)
+        
+        base_ts = 1785950000.0
+        # Legitimate backoff sequence
+        heartbeats = [
+            (base_ts, 30.0),
+            (base_ts + 30.0, 60.0),
+            (base_ts + 90.0, 120.0),
+            (base_ts + 210.0, 240.0),
+            (base_ts + 450.0, 240.0)
+        ]
+        
+        for ts, expected in heartbeats:
+            payload = {"queue_depth": 0, "expected_interval": expected}
+            payload_json = json.dumps(payload)
+            with db._connection() as conn:
+                conn.execute("INSERT INTO audit_log (event_type, payload_json, timestamp) VALUES ('SCHEDULER_HEARTBEAT', ?, ?)", (payload_json, ts))
+                conn.commit()
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"event_type": "SCHEDULER_HEARTBEAT", "payload": payload, "timestamp": ts}) + "\n")
+
+        # 1. Assert legitimate backoff sequence passes verify_audit cleanly
+        passed, errors = verify_audit(db_path, log_path)
+        self.assertTrue(passed, f"Legitimate backoff sequence was falsely flagged: {errors}")
+
+        # 2. Inject a genuine stall gap: 1500s gap (> 5x expected_interval 240s = 1200s) without STALL_DETECTED
+        stall_ts = base_ts + 450.0 + 1500.0
+        payload_stall = {"queue_depth": 0, "expected_interval": 240.0}
+        with db._connection() as conn:
+            conn.execute("INSERT INTO audit_log (event_type, payload_json, timestamp) VALUES ('SCHEDULER_HEARTBEAT', ?, ?)", (json.dumps(payload_stall), stall_ts))
+            conn.commit()
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"event_type": "SCHEDULER_HEARTBEAT", "payload": payload_stall, "timestamp": stall_ts}) + "\n")
+
+        # 3. Assert genuine stall gap IS caught after fix
+        passed_after_stall, errors_after_stall = verify_audit(db_path, log_path)
+        self.assertFalse(passed_after_stall, "Genuine stall gap was not caught by verify_audit")
+        self.assertTrue(any("Unexplained heartbeat gap" in err and "without STALL_DETECTED event" in err for err in errors_after_stall),
+                        f"Expected unexplained heartbeat gap error, got: {errors_after_stall}")
+
 if __name__ == "__main__":
     unittest.main()

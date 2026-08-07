@@ -33,7 +33,7 @@ def resolve_db_path(db_path: str = DEFAULT_DB_PATH) -> str:
 
 LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
     # First write — no prior row
-    "DISCOVERED":       {"PLANNED", "QUALITY_REJECTED"},
+    "DISCOVERED":       {"DISCOVERED", "PLANNED", "QUALITY_REJECTED"},
 
     # Budget check
     "PLANNED":          {"READY", "BLOCKED"},
@@ -70,8 +70,9 @@ class InvalidStateTransitionError(Exception):
 class Database:
     """Persistent SQLite Database Manager handling tasks, approvals, idempotency_keys, audit_log, and budget tables."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, log_filepath: str = "audit_log.jsonl"):
         self.db_path = resolve_db_path(db_path)
+        self.log_filepath = log_filepath
         self._init_db()
 
     @contextmanager
@@ -206,6 +207,12 @@ class Database:
                     VALUES (?, ?, ?)
                 """, (event_type, json.dumps(payload), now))
 
+        # 5. Append audit event to audit_log.jsonl ONLY AFTER transaction commits successfully
+        if audit_event:
+            event_type, payload = audit_event
+            from src.logger import AuditLogger
+            AuditLogger(log_filepath=self.log_filepath).write_jsonl(event_type, payload, timestamp=now)
+
 
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -311,6 +318,8 @@ class Database:
                 VALUES (?, ?, ?)
             """, (event_type, json.dumps(payload), now))
             conn.commit()
+        from src.logger import AuditLogger
+        AuditLogger(log_filepath=self.log_filepath).write_jsonl(event_type, payload, timestamp=now)
 
     def get_audit_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self._connection() as conn:
