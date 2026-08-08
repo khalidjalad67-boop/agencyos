@@ -364,7 +364,7 @@ class TestPhase08DVerifier(unittest.TestCase):
 
         db_path = os.path.join(self.temp_dir, "backoff_test.db")
         log_path = os.path.join(self.temp_dir, "backoff_test.jsonl")
-        db = Database(db_path)
+        db = Database(db_path, log_path)
         logger = AuditLogger(log_path, db=db)
         watchdog = OperationalWatchdog(db=db)
 

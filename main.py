@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import signal
 from typing import List, Dict, Any, Optional
 
 from src.opportunity import OpportunityFetcher, Opportunity
@@ -10,6 +11,23 @@ from src.worker import Worker, WorkerResult
 from src.reviewer import Reviewer, ReviewResult
 from src.approval import ApprovalGate, ApprovalDecision
 from src.logger import AuditLogger
+
+# ---------------------------------------------------------------------------
+# Graceful shutdown flag — set by SIGTERM handler so any in-flight audit write
+# (SQLite commit + JSONL append) can finish before the process exits.
+# ---------------------------------------------------------------------------
+_shutdown_requested = False
+
+def _handle_sigterm(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+    print("\n[AUTONOMOUS ENGINE] SIGTERM received — finishing current operation before exit.", flush=True)
+
+# Register on platforms that support SIGTERM (Linux/macOS); skip silently on Windows.
+try:
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+except (AttributeError, OSError):
+    pass
 
 def run_phase0_loop(
     num_opportunities: int = 105,
@@ -330,7 +348,7 @@ def run_phase0_7_autonomous_loop(
 
     tick = 0
     try:
-        while True:
+        while not _shutdown_requested:
             tick += 1
             scheduled_ids, next_interval = scheduler.tick(opportunities_override=opportunities_override, limit=num_opportunities)
             print(f"[SCHEDULER TICK {tick}] Scheduled {len(scheduled_ids)} new task execution events.")
@@ -350,10 +368,21 @@ def run_phase0_7_autonomous_loop(
             if max_ticks is not None and tick >= max_ticks:
                 break
 
+            if _shutdown_requested:
+                break
+
             print(f"Sleeping {next_interval:.1f}s until next scheduler tick... (Press Ctrl+C to stop)")
-            time.sleep(next_interval)
+            # Sleep in 0.5s increments so SIGTERM wakes us promptly
+            elapsed = 0.0
+            while elapsed < next_interval and not _shutdown_requested:
+                time.sleep(0.5)
+                elapsed += 0.5
     except KeyboardInterrupt:
         print("\n[AUTONOMOUS ENGINE] Gracefully shutting down service loop.")
+
+    if _shutdown_requested:
+        print("\n[AUTONOMOUS ENGINE] Graceful SIGTERM shutdown complete.")
+
 
     final_metrics = health.get_metrics()
     print("\n" + "="*95)

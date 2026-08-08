@@ -8,7 +8,7 @@ from src.worker import Worker, WorkerResult
 from src.reviewer import Reviewer, ReviewResult
 from src.approval import ApprovalGate, ApprovalDecision
 from src.logger import AuditLogger
-from src.db import resolve_db_path
+from src.db import resolve_db_path, resolve_log_path
 from main import run_phase0_loop
 
 TEST_LOG_FILE = "test_audit_log.jsonl"
@@ -19,15 +19,17 @@ _SKIP_NETWORK_REASON = "Network tests skipped via AGENTOS_SKIP_NETWORK_TESTS=1"
 class TestPhase0(unittest.TestCase):
     
     def setUp(self):
-        if os.path.exists(TEST_LOG_FILE):
-            os.remove(TEST_LOG_FILE)
+        for p in (TEST_LOG_FILE, resolve_log_path(TEST_LOG_FILE)):
+            if os.path.exists(p):
+                os.remove(p)
         test_db = resolve_db_path("agencyos.db")
         if os.path.exists(test_db):
             os.remove(test_db)
 
     def tearDown(self):
-        if os.path.exists(TEST_LOG_FILE):
-            os.remove(TEST_LOG_FILE)
+        for p in (TEST_LOG_FILE, resolve_log_path(TEST_LOG_FILE)):
+            if os.path.exists(p):
+                os.remove(p)
         test_db = resolve_db_path("agencyos.db")
         if os.path.exists(test_db):
             os.remove(test_db)

@@ -26,7 +26,7 @@ class TestPhase08A2Persistence(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.test_db_path = os.path.join(self.temp_dir, "test_0_8a2.db")
         self.test_log_path = os.path.join(self.temp_dir, "test_0_8a2_audit.jsonl")
-        self.db = Database(self.test_db_path)
+        self.db = Database(self.test_db_path, self.test_log_path)
 
     def tearDown(self):
         if os.path.exists(self.temp_dir):
