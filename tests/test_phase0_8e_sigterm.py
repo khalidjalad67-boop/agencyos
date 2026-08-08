@@ -231,6 +231,8 @@ def _handle(signum, frame):
     global _done
     _done = True
 signal.signal(signal.SIGTERM, _handle)
+sys.stdout.write("STARTED\\n")
+sys.stdout.flush()
 count = 0
 while not _done and count < 200:
     db.log_event("SCHEDULER_HEARTBEAT", {{"count": count, "ts": time.time()}})
@@ -272,9 +274,14 @@ class TestSigtermSubprocessNoDrift(unittest.TestCase):
     def test_sigterm_at_heartbeat_boundary_no_jsonl_orphan(self):
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         violations = []
+        results = []
 
         for i in range(self.ITERATIONS):
             db_path, log_path = self._paths(i)
+            # Pre-initialize DB schema so worker process doesn't get killed mid-migration
+            init_db = Database(db_path, log_path)
+            del init_db
+
             script = _WORKER_SCRIPT_TEMPLATE.format(
                 project_root=project_root,
                 db_path=db_path,
@@ -284,8 +291,23 @@ class TestSigtermSubprocessNoDrift(unittest.TestCase):
                 [sys.executable, "-c", script],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                text=True
             )
-            delay = 0.05 + (i % 10) * 0.02  # 0.05-0.23s to hit different phases
+
+            # Wait for subprocess to finish initialization and start heartbeat loop
+            started = False
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                if line.strip() == "STARTED":
+                    started = True
+                    break
+
+            if not started:
+                self.fail(f"Subprocess failed to start heartbeat loop")
+
+            delay = 0.02 + (i % 10) * 0.03  # 0.02s to 0.29s of active heartbeat writes
             time.sleep(delay)
             try:
                 os.kill(proc.pid, signal.SIGTERM)
@@ -298,9 +320,13 @@ class TestSigtermSubprocessNoDrift(unittest.TestCase):
                 proc.wait()
 
             sql, jsonl, _ = _counts_match(db_path, log_path)
+            status = "PASS" if jsonl <= sql else "FAIL"
+            print(f"[SIGTERM ITER {i:02d}] delay={delay:.2f}s | SQLite={sql} | JSONL={jsonl} | {status}", flush=True)
+            results.append((i, delay, sql, jsonl, status))
+
             if jsonl > sql:
                 violations.append(
-                    f"iter {i}: JSONL={jsonl} > SQLite={sql} (delay={delay:.3f}s)"
+                    f"iter {i}: JSONL={jsonl} > SQLite={sql} (delay={delay:.2f}s)"
                 )
             self._cleanup(db_path, log_path)
 

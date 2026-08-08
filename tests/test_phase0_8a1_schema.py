@@ -19,40 +19,33 @@ class TestPhase08A1Schema(unittest.TestCase):
             shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_audited_db_migration_and_orphan_quarantine(self):
-        """Runs migration directly against a copy of the actual pristine audited agencyos.db at project root.
-        Verifies 23 orphan records quarantined, budget and approvals tables left completely empty,
-        and PRAGMA foreign_key_check passes with 0 errors.
+        """Runs migration directly against a pre-migration database with 23 orphan records
+        (10 budget, 13 approvals). Verifies 23 orphan records quarantined, budget and approvals
+        tables left completely empty post-migration, and PRAGMA foreign_key_check passes with 0 errors.
 
-        This test is coupled to the specific VPS soak artifact agencyos.db that has 23 pre-migration
-        legacy orphan rows. It is skipped when that file is not present (e.g. clean checkout, after
-        smoke tests that delete it, or CI environments).
+        Uses checked-in static fixture tests/fixtures/orphan_quarantine_fixture.db so this test
+        runs deterministically in CI and clean checkouts.
         """
         audited_db_orig = os.path.join(get_project_root(), "agencyos.db")
-        if not os.path.exists(audited_db_orig):
-            self.skipTest(
-                "agencyos.db not present at project root — this test requires the specific VPS soak "
-                "artifact with 23 pre-migration legacy orphan rows. Run after a soak before cleanup."
-            )
+        fixture_db = os.path.join(get_project_root(), "tests", "fixtures", "orphan_quarantine_fixture.db")
 
-        # Also skip if this DB has already been migrated (orphan table exists but is empty),
-        # meaning it's a fresh post-migration file rather than the pre-migration VPS artifact.
-        import sqlite3 as _sqlite3
-        _conn = _sqlite3.connect(audited_db_orig)
-        _has_orphan_table = _conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_legacy_orphaned_rows'"
-        ).fetchone()[0]
-        _orphan_count = _conn.execute("SELECT COUNT(*) FROM _legacy_orphaned_rows").fetchone()[0] if _has_orphan_table else -1
-        _conn.close()
-        if _has_orphan_table and _orphan_count == 0:
-            self.skipTest(
-                "agencyos.db has already been migrated (0 orphan rows) — this test requires the "
-                "pre-migration VPS soak artifact with 23 legacy orphan rows."
-            )
+        # Determine target source: use project root agencyos.db if unmigrated with orphans, otherwise static fixture
+        target_src = fixture_db
+        if os.path.exists(audited_db_orig):
+            import sqlite3 as _sqlite3
+            _conn = _sqlite3.connect(audited_db_orig)
+            _has_table = _conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_legacy_orphaned_rows'"
+            ).fetchone()[0]
+            _conn.close()
+            if not _has_table:
+                target_src = audited_db_orig
 
+        self.assertTrue(os.path.exists(target_src), f"Target migration DB must exist at {target_src}")
 
-        # Copy audited DB to temp directory
+        # Copy target source DB to temp directory
         audited_db_copy = os.path.join(self.temp_dir, "audited_agencyos_copy.db")
-        shutil.copy2(audited_db_orig, audited_db_copy)
+        shutil.copy2(target_src, audited_db_copy)
         print(f"\n[TEST DISCOVERY DB PATH] test_audited_db_migration_and_orphan_quarantine -> target: {audited_db_copy}")
 
         # Run migration on the copy
