@@ -354,6 +354,63 @@ class TestPhase08ERegressionSuite(unittest.TestCase):
             self.assertIn("Failed to fetch live GitHub issues", err_msg)
             self.assertIn("rate limit", err_msg.lower())
 
+    # -------------------------------------------------------------------------
+    # 7. Live Autonomous Loop TELEMETRY_REPORT Logging Gap
+    # -------------------------------------------------------------------------
+    def test_autonomous_loop_emits_telemetry_report_matching_db_metrics(self):
+        """Regression Test for Telemetry Logging Gap: Verifies that run_phase0_7_autonomous_loop()
+        emits a TELEMETRY_REPORT event on every tick, and the event payload's 'telemetry' dictionary
+        matches direct db.get_telemetry_metrics() values at the exact same moment, allowing
+        verify_audit.py to perform its telemetry-accuracy verification during real soak runs.
+        """
+        from main import run_phase0_7_autonomous_loop
+
+        # Seed test opportunities
+        test_opps = [
+            Opportunity(id="opp-tel-1", title="Tel Task 1", description="Body 1", source="test_src", payload={"repo": "test/repo"}),
+            Opportunity(id="opp-tel-2", title="Tel Task 2", description="Body 2", source="test_src", payload={"repo": "test/repo"})
+        ]
+
+        # Execute 1 tick of the autonomous loop using the test DB and test log path
+        run_phase0_7_autonomous_loop(
+            db_path=self.db_path,
+            log_filepath=self.log_path,
+            num_opportunities=2,
+            interval_sec=0.1,
+            max_ticks=1,
+            opportunities_override=test_opps
+        )
+
+        # Retrieve TELEMETRY_REPORT audit logs
+        logs = self.db.get_audit_logs(limit=100)
+        tel_events = [l for l in logs if l["event_type"] == "TELEMETRY_REPORT"]
+
+        self.assertGreaterEqual(
+            len(tel_events), 1,
+            "Autonomous loop MUST emit at least 1 TELEMETRY_REPORT audit event during execution!"
+        )
+
+        # Get payload of the latest TELEMETRY_REPORT event
+        latest_event = tel_events[-1]
+        event_payload = json.loads(latest_event["payload_json"]) if isinstance(latest_event["payload_json"], str) else latest_event["payload_json"]
+        self.assertIn("telemetry", event_payload, "TELEMETRY_REPORT event payload MUST contain a 'telemetry' dictionary")
+
+        event_telemetry = event_payload["telemetry"]
+        live_db_metrics = self.db.get_telemetry_metrics()
+
+        # Compare event values with direct DB query metrics
+        self.assertEqual(event_telemetry["total_tasks"], live_db_metrics["total_tasks"])
+        self.assertEqual(event_telemetry["successful_executions"], live_db_metrics["successful_executions"])
+        self.assertEqual(event_telemetry["worker_failed_executions"], live_db_metrics["worker_failed_executions"])
+        self.assertEqual(event_telemetry["quality_rejected_executions"], live_db_metrics["quality_rejected_executions"])
+        self.assertEqual(event_telemetry["budget_blocked_executions"], live_db_metrics["budget_blocked_executions"])
+        self.assertEqual(event_telemetry["approval_rejected_executions"], live_db_metrics["approval_rejected_executions"])
+        self.assertAlmostEqual(event_telemetry["total_cost"], live_db_metrics["total_cost"], places=6)
+
+        # Also run verify_audit to ensure verify_audit.py passes on the generated DB and JSONL
+        passed, errors = verify_audit(self.db_path, self.log_path)
+        self.assertTrue(passed, f"verify_audit MUST pass on live loop output, got errors: {errors}")
+
 
 if __name__ == "__main__":
     unittest.main()

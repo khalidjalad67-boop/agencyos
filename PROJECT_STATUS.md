@@ -17,8 +17,9 @@ decisions made in conversation that aren't written into those docs yet.
   boxes checked while the verification flag said the opposite — that
   contradiction is now fixed). Phase 0.8's checkpoints are the real,
   independently-verified source of truth for these guarantees.
-- **Phase 0.8 (Engine Stabilization): 0.8A–0.8D COMPLETE & VERIFIED.
-  Second 24h+ soak IN PROGRESS.**
+- **Phase 0.8 (Engine Stabilization): ALL CHECKPOINTS 0.8A1–0.8E
+  COMPLETE & VERIFIED. Manual audit ran and found one real gap — fix in
+  progress, fresh soak needed after.**
   - **0.8A1 (Database Schema): COMPLETE & VERIFIED ✅.** Deterministic
     path resolution, 12-state `CHECK` constraint, `UNIQUE(opportunity_id)`,
     `FOREIGN KEY ON DELETE RESTRICT`, legacy orphan quarantine (23 rows,
@@ -55,11 +56,15 @@ decisions made in conversation that aren't written into those docs yet.
     Fixed via `error_reason LIKE 'BUDGET_BLOCKED:%'` disambiguation,
     verified against the real (free-text, non-prefixed) `error_reason`
     values `engine.py` actually writes.
-  - **0.8D (Automated Verification, Replay & Corruption Suite): COMPLETE
-    & VERIFIED ✅** (2026-08-07, after significant rework). Built
-    `tools/verify_audit.py` and `tools/replay_audit.py`, reusing
-    `LEGAL_TRANSITIONS` from `src/db.py` rather than reimplementing it.
-    Several real issues caught and fixed during this checkpoint:
+  - **0.8D (Automated Verification, Replay & 24h Soak): TOOLS BUILT &
+    VERIFIED, CHECKPOINT NOT YET COMPLETE.** The soak is 0.8D's own final
+    DoD item, not a separate step after it — per `ROADMAP.md`: "24-hour
+    soak, re-audited from scratch... PASS — 0.8A1 through 0.8D all hold
+    simultaneously on the same soak run." `tools/verify_audit.py` and
+    `tools/replay_audit.py` are built and independently verified against
+    real corruption cases (2026-08-07), reusing `LEGAL_TRANSITIONS` from
+    `src/db.py` rather than reimplementing it. Several real issues caught
+    and fixed during this work:
     - The impossible-transition event dispatch was initially missing
       `TASK_BLOCKED`/`OPPORTUNITY_REJECTED` (the real event names) and had
       a dead entry for a `"QUALITY_REJECTED"` event that's never emitted
@@ -130,21 +135,76 @@ decisions made in conversation that aren't written into those docs yet.
       rows == 848 JSONL lines exactly, across genuinely mixed event
       sources (heartbeats via `AuditLogger`, task events via
       `execute_atomic_transition`) for the first time. Both tools exit 0.
-  - **Second 24h+ soak: IN PROGRESS on the VPS.** Two failed start
-    attempts first (a crashed/orphaned process left a stale `agencyos.db`
-    with 105 tasks all sharing one identical `created_at` timestamp,
-    which a subsequent start silently "recovered" as
-    `ignored_tasks: 105` instead of starting genuinely fresh) — caught by
-    checking `STARTUP RECOVERY` output and process/session state directly
-    rather than assuming a restart worked. **Confirmed clean start:
-    2026-08-07 14:52:33 UTC** (`'ignored_tasks': 0` across the board).
-    Target completion: **2026-08-08 14:52:33 UTC**. Not yet verified —
-    do not run `verify_audit.py`/`replay_audit.py` until it's genuinely
-    past that mark, and specifically re-check SQLite/JSONL line-count
-    parity partway through this time, not just at the end.
-  - **Next after the soak: 0.8E (Regression Suite)** — one permanent
-    test per historical bug found across this entire phase, including
-    the JSONL-sync gap and the verifier's own off-by-one.
+  - **Third 24h+ soak (2026-08-08→09, 25.24h): CLEAN — 0.8D CLOSED ✅.**
+    Independently re-verified from scratch against the true final state
+    (confirmed via explicit `ps aux` empty-output check after two prior
+    rounds where the process turned out to still be running when
+    "stopped" was reported): JSONL/SQLite parity held perfectly through
+    the entire run and the actual shutdown — `1320 == 1320`, zero drift
+    anywhere, including exactly the shutdown moment that broke the
+    second soak. Zero duplicate executions, zero state-machine
+    violations across 122 tasks (full replay), budget reconciling to 8
+    decimals, zero orphans, zero backwards timestamps, genuinely diverse
+    real data across 5 repos. `verify_audit.py` and `replay_audit.py`
+    both exit 0 — independently confirmed, not trusted from pasted
+    output. **This satisfies `ROADMAP.md`'s literal 0.8D DoD**: "0.8A1
+    through 0.8D all hold simultaneously on the same soak run, confirmed
+    by both tools reporting zero failures." Three soak attempts total —
+    first invalidated by the JSONL-sync gap, second invalidated by the
+    shutdown-durability race, third clean after both were fixed and the
+    fix itself proven under a 30-iteration Linux SIGTERM stress test
+    before this soak even started.
+  - **0.8E (Regression Suite): COMPLETE ✅.** One permanent test per
+    historical bug found across 0.8A1–0.8D, in `tests/
+    test_phase0_8e_regression.py` and `tests/test_phase0_8e_sigterm.py`.
+    Each test verified to exercise the real production code path that
+    had the bug, not just a symptom-level check — most notably the 0.8B
+    `REVIEW→REVIEW` test, which went through two drafts: the first only
+    called `execute_atomic_transition()` directly to force that
+    transition (proving the `LEGAL_TRANSITIONS` table entry exists,
+    which was never in question), the second genuinely seeds a
+    mid-crash task, routes it through the real `run_startup_recovery()`,
+    and lets `engine.process_task()` complete the review naturally —
+    this version would actually have caught the original bug had it
+    still been present. Full suite: **97 tests, 0 failures, 1
+    environment-appropriate skip** (Windows skip for the Linux-specific
+    SIGTERM stress test). `test_phase0_8d_verifier.py`'s existing
+    historical-bypass tests were correctly identified as already
+    covering the 0.8D case and were not duplicated.
+  - **Manual audit: RAN 2026-08-09, FOUND 2 ISSUES, VERDICT NOT PASS.**
+    A genuinely thorough independent audit (122 tasks, 122 unique
+    opportunities, 0 duplicates, 0 orphans, exact JSONL/DB parity,
+    monotonic timestamps, exact budget reconciliation, all 122 completed
+    — same category of checks as the original 2026-08-04 forensic audit
+    that started this phase) surfaced two things:
+    1. **Not a code bug, a doc bug — fixed.** The audit flagged the
+       absence of `APPROVED`/`DELIVERED` transition events against
+       `ROADMAP.md`'s Phase 0.8 "Explicit state machine" section, which
+       still had the *pre-0.8B* diagram — nobody had gone back to fix
+       that specific spot after the 0.8B decision to drop those states
+       (flagged as a "follow-up worth doing, not urgent" at the time and
+       then never done). The real system's behavior was already correct
+       and matched `ARCHITECTURE.md`'s corrected diagram — confirmed by
+       checking the actual soak's `audit_log.jsonl` event sequence
+       directly. `ROADMAP.md` corrected to match `ARCHITECTURE.md`.
+    2. **Real, confirmed gap.** Independently verified: zero
+       `TELEMETRY_REPORT` events anywhere in the closing soak's 1320
+       total events. `get_telemetry_metrics()` computes correctly when
+       called directly (0.8C proved that), but `main.py`'s live
+       autonomous loop only ever prints telemetry to console each tick
+       — it never logs it as a real audit event. This means
+       `verify_audit.py`'s telemetry-accuracy check (built in 0.8D)
+       silently no-op'd for the entire 25-hour soak instead of actually
+       verifying anything (`if telemetry_events:` — empty list, check
+       skipped). The soak's clean `verify_audit.py` exit code never
+       exercised this guarantee at all.
+  - **Fix needed before re-audit**: `main.py` must periodically log a
+    real `TELEMETRY_REPORT` event (not just print to console) during the
+    autonomous loop, plus a regression test confirming a live-run event's
+    values match a direct `get_telemetry_metrics()` call. This is narrow
+    and well-understood, unlike the previous two soak-invalidating bugs
+    — but per the Hermes gate's own rule, still requires a fresh soak
+    once fixed, since it changes what's written to `audit_log.jsonl`.
 - **Do not start Phase 1 until Phase 0.8's Hermes gate DoD is confirmed
   with real data from a soak that hasn't been invalidated.**
 
@@ -173,10 +233,30 @@ decisions made in conversation that aren't written into those docs yet.
    "started successfully" — they were caught by checking `ps aux`,
    `tmux ls`, and the actual `STARTUP RECOVERY` summary line directly.
    Assume a restart didn't work until confirmed otherwise.
-4. **The evidence-first rule has held up every time it's been tested** —
-   now including catching a premature "duplicate writes eliminated" claim
-   before it reached the VPS, and two rounds of fabricated soak-restart
-   evidence before a genuinely clean start was confirmed.
+5. **A test skipped on the wrong platform is a test that hasn't run.**
+   The SIGTERM stress test that actually proves the durability fix works
+   was decorated to skip on Windows — and the whole review session had
+   been running on Windows, so "8/8 pass" was true and also meaningless
+   for the one test that mattered. Cross-platform-sensitive fixes need
+   their proof run on the platform the bug actually occurs on, not
+   wherever the IDE happens to be running.
+6. **"I ran pkill" isn't the same as "the process is dead."** The third
+   soak's stop sequence was reported twice as complete while `ps aux`
+   still showed the original PID alive both times — caught only by
+   insisting on the literal empty-output confirmation rather than
+   accepting "exit 0" from the verification tools as implicit proof the
+   process had stopped. A live process can still pass read-only checks
+   against a stable-looking snapshot; that's not the same guarantee as
+   a genuinely final, unchanging state.
+7. **A check that silently no-ops on empty data isn't a passing check.**
+   `verify_audit.py`'s telemetry-accuracy check only runs
+   `if telemetry_events:` — with zero `TELEMETRY_REPORT` events in the
+   entire closing soak, it never actually ran, and "exit 0" reflected
+   that nothing was checked, not that everything was fine. This is
+   exactly why the manual audit step exists as a distinct, human-only
+   gate item separate from the automated tools — an automated verifier
+   can only catch what it's given data to check against, and won't
+   necessarily notice when the data itself is missing.
 
 ## Standing decisions made in conversation (not yet in ROADMAP/ARCHITECTURE)
 
@@ -205,23 +285,24 @@ decisions made in conversation that aren't written into those docs yet.
 
 ## Immediate next actions, in order
 
-1. Let the second soak run to completion — **2026-08-08 14:52:33 UTC**.
-   Do not stop it early, even if a spot-check looks slightly off; bring
-   anything unusual for review while it's still running rather than
-   restarting the clock.
-2. At completion: `pkill -f "python3 main.py"`, confirm the process is
-   actually dead, then run `tools/verify_audit.py` and
-   `tools/replay_audit.py` against the real resulting files and send raw
-   output plus the actual `agencyos.db` + `audit_log.jsonl` — same
-   evidence bar as every checkpoint before this.
-3. Specifically re-check SQLite/JSONL line-count parity at completion
-   (and ideally at a mid-run spot-check too) to confirm the JSONL-sync
-   fix held for the full duration, not just the first 15 minutes.
-4. Only if the soak is genuinely clean: implement 0.8E (Regression
-   Suite) — one permanent test per historical bug found across this
-   entire phase.
-5. Only after the full Hermes gate passes (0.8A–0.8E, a soak that hasn't
-   been invalidated, `verify_audit.py` clean, `replay_audit.py` clean,
-   manual audit) — migrate the pipeline to Hermes.
-6. Only then begin Phase 1 (Event Bus / Policy Engine — build only what
+1. Fix the confirmed gap: `main.py`'s autonomous loop must periodically
+   log a real `TELEMETRY_REPORT` audit event (`logger.log_event(
+   "TELEMETRY_REPORT", {"telemetry": db.get_telemetry_metrics()})`), not
+   just print telemetry to console each tick. Add a regression test
+   confirming a live-run event's values match a direct
+   `get_telemetry_metrics()` call at the same moment. Run the full
+   suite. Do not touch the durability fix (`PRAGMA synchronous=FULL`,
+   the SIGTERM handler) or any other 0.8A–0.8E code while doing this.
+2. Once fixed and tested: a fresh soak is required — the Hermes gate's
+   own rule is "no exceptions for 'it's probably fine now,'" and this
+   change alters what gets written to `audit_log.jsonl`. Expected to be
+   narrower/faster to resolve than the previous two soak-invalidating
+   bugs, but that's an expectation, not a substitute for re-running it.
+3. Re-run the manual audit against the new soak's real files — same
+   rigor as before, specifically re-checking that `TELEMETRY_REPORT`
+   events now exist and their values are correct against raw DB counts.
+4. Once the manual audit passes: the full Hermes gate is satisfied
+   (0.8A–0.8E, the clean soak, both verification tools clean, manual
+   audit). Migrate the pipeline to Hermes.
+5. Only then begin Phase 1 (Event Bus / Policy Engine — build only what
    Hermes doesn't already cover).

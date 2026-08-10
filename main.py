@@ -320,6 +320,7 @@ def run_phase0_loop(
 
 def run_phase0_7_autonomous_loop(
     db_path: str = "agencyos.db",
+    log_filepath: Optional[str] = None,
     num_opportunities: int = 105,
     interval_sec: float = 30.0,
     max_ticks: Optional[int] = None,
@@ -338,7 +339,7 @@ def run_phase0_7_autonomous_loop(
     print(f"STARTING AGENCYOS PHASE 0.7 AUTONOMOUS OPERATIONS (SQLite: {db_path})")
     print("="*95)
 
-    db = Database(db_path)
+    db = Database(db_path, log_filepath=log_filepath)
     recovery_summary = run_startup_recovery(db)
     print(f"[STARTUP RECOVERY] Summary: {recovery_summary}")
 
@@ -364,6 +365,12 @@ def run_phase0_7_autonomous_loop(
 
             metrics = health.get_metrics()
             print(f"[HEALTH TELEMETRY Tick {tick}] Queue: {metrics['queue_depth']} | Running: {metrics['running_tasks']} | Pending Approvals: {metrics['pending_approvals']} | Failure Rate: {metrics['failure_rate']*100:.1f}%")
+
+            tel_metrics = db.get_telemetry_metrics()
+            db.log_event("TELEMETRY_REPORT", {
+                "summary": f"Telemetry Report Tick {tick}: {tel_metrics['successful_executions']}/{tel_metrics['total_tasks']} completed. Cost: ${tel_metrics['total_cost']:.6f}",
+                "telemetry": tel_metrics
+            })
 
             if max_ticks is not None and tick >= max_ticks:
                 break

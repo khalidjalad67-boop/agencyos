@@ -234,7 +234,7 @@ independently-verified status of each of these guarantees.
 
 ---
 
-## Phase 0.8 — Engine Stabilization [FAILED FIRST ATTEMPT ❌ — BLOCKING]
+## Phase 0.8 — Engine Stabilization [0.8A1–0.8E COMPLETE ✅ — MANUAL AUDIT FOUND A REAL GAP, FIX + FRESH SOAK REQUIRED]
 
 > **Governing Principle**: A loop that produces plausible-looking telemetry is not the same as a loop that is correct. Verify against raw artifacts — DB rows and log events, not summaries — every time.
 
@@ -263,12 +263,24 @@ No new opportunity sources, no new departments, no Executive Board logic, no Her
 
 ### Explicit state machine
 
-One pipeline. This is the entire legal transition graph — anything not on this list is an illegal transition and must be rejected/logged, not silently allowed:
+One pipeline. This is the entire legal transition graph — anything not on this list is an illegal transition and must be rejected/logged, not silently allowed. This is the same state machine documented canonically in `ARCHITECTURE.md`'s "Task State Machine" section — treat that as the single source of truth if the two ever look inconsistent again:
 
 ```
 DISCOVERED → PLANNED → READY → EXECUTING → REVIEW → WAITING_APPROVAL
-    → APPROVED → DELIVERED → COMPLETED
+    → COMPLETED   (approved and review passed)
+    → BLOCKED     (human rejection, or review failed)
 ```
+
+`APPROVED` and `DELIVERED` are reserved for a future delivery phase and
+are not persisted states today — `engine.py` transitions
+`WAITING_APPROVAL` directly to `COMPLETED` or `BLOCKED`. (This section
+originally listed `APPROVED`/`DELIVERED` as part of the legal graph, from
+before the 0.8B architecture decision corrected this — that stale text
+caused a false alarm during the manual audit before being caught and
+fixed. Confirmed against the actual `audit_log.jsonl` from the closing
+soak: the real event sequence is exactly `DISCOVERED → PLANNED → READY →
+EXECUTING → WORKER_EXECUTED → REVIEW_COMPLETED → WAITING_APPROVAL →
+COMPLETED`, matching this corrected diagram, not the old one.)
 
 Terminal states (zero outgoing transitions — a task in one of these can never move again without an explicit, logged manual override):
 
@@ -288,7 +300,7 @@ All schema changes must be versioned through numbered migration files (e.g. `001
 
 *Schema only. No persistence-writing code changes yet.*
 
-- [ ] `tasks.state` constrained to the explicit state machine above via `CHECK(state IN ('DISCOVERED','PLANNED','READY','EXECUTING','REVIEW','WAITING_APPROVAL','APPROVED','DELIVERED','COMPLETED','BLOCKED','QUALITY_REJECTED','WORKER_FAILED'))`.
+- [ ] `tasks.state` constrained to the explicit state machine above via `CHECK(state IN ('DISCOVERED','PLANNED','READY','EXECUTING','REVIEW','WAITING_APPROVAL','APPROVED','DELIVERED','COMPLETED','BLOCKED','QUALITY_REJECTED','WORKER_FAILED'))`. (This checklist item predates the 0.8B decision to drop `APPROVED`/`DELIVERED` as persisted states — if the deployed SQL `CHECK` constraint still lists them as allowed values, that's harmless, not a bug: the constraint is a ceiling on what SQLite will accept, `LEGAL_TRANSITIONS` in `db.py` is the actual application-layer enforcement, and nothing ever writes those two values. Not worth a migration to tighten unless verified otherwise.)
 - [ ] `UNIQUE(opportunity_id)` on `tasks` (or `UNIQUE(key)` on `idempotency_keys`, whichever is the enforcement point).
 - [ ] `NOT NULL` on `opportunity_id` in `budget` and `approvals`.
 - [ ] `FOREIGN KEY` from `budget.opportunity_id` and `approvals.opportunity_id` back to `tasks.opportunity_id`. SQLite must reject an orphan write, not just Python.
@@ -343,7 +355,7 @@ All schema changes must be versioned through numbered migration files (e.g. `001
 - [ ] `replay_audit.py` completes in under 60 seconds.
 - [ ] Scheduler heartbeat query remains under 100 ms with a 24-hour database.
 
-#### 0.8E — Regression Suite
+#### 0.8E — Regression Suite [COMPLETE ✅]
 
 Every bug found in the forensic audit gets its own permanent test.
 
@@ -361,16 +373,43 @@ Examples:
 
 Do not mark this phase — or any checkpoint within it — complete on the strength of a passing test suite alone (see PROJECT_STATUS.md — this has burned the project twice already). Require the raw DB + log artifacts.
 
+**Status**: `tests/test_phase0_8e_regression.py` implements one permanent
+regression test per historical bug found across 0.8A1–0.8D, plus
+`tests/test_phase0_8e_sigterm.py` for the shutdown-durability race found
+during the second soak. Each test was checked to exercise the real
+production code path that had the bug, not just the surface symptom —
+notably the 0.8B `REVIEW→REVIEW` test, which went through two drafts
+before it actually routed through `run_startup_recovery()` and
+`engine.process_task()` for real rather than just confirming a
+`LEGAL_TRANSITIONS` table entry existed. Full suite: 97 tests, 0
+failures, 1 skip (Windows-only skip for the Linux-specific SIGTERM
+stress test). See `PROJECT_STATUS.md` for the full verification trail.
+
 ### Hermes gate
 
 Strictly sequential — no parallel work, no "almost done":
 
 ```
-0.8A1 PASS → 0.8A2 PASS → 0.8B PASS → 0.8C PASS → 0.8D PASS → 0.8E PASS
-  → fresh 24-hour soak on clean artifacts PASS
-  → verify_audit.py: zero failures
-  → replay_audit.py: zero diffs
-  → manual audit PASS
+0.8A1 PASS ✅ → 0.8A2 PASS ✅ → 0.8B PASS ✅ → 0.8C PASS ✅ → 0.8D PASS ✅ → 0.8E PASS ✅
+  → fresh 24-hour soak on clean artifacts PASS ✅ (third attempt,
+    2026-08-08→09, 25.24h — first two soaks found and fixed real bugs;
+    third came back clean: independently re-verified, zero duplicate
+    executions, zero state-machine violations, budget reconciled to 8
+    decimals, JSONL/SQLite parity held through actual shutdown)
+  → verify_audit.py: zero failures ✅ (independently reproduced, not
+    trusted from pasted output)
+  → replay_audit.py: zero diffs ✅ (same)
+  → manual audit: FAILED FIRST ATTEMPT ❌ (2026-08-09) — found 2 issues:
+    (1) audit trail didn't show `APPROVED`/`DELIVERED` transitions —
+    traced to stale pre-0.8B documentation in this file, not a code bug
+    (corrected above; real system behavior already matched
+    `ARCHITECTURE.md` correctly); (2) **real gap, confirmed**: zero
+    `TELEMETRY_REPORT` events in the entire closing soak, meaning
+    `verify_audit.py`'s telemetry-accuracy check silently no-op'd the
+    whole run instead of actually verifying anything. Must fix: the live
+    autonomous loop needs to periodically log a real `TELEMETRY_REPORT`
+    event, not just compute metrics for console display. Requires a
+    fresh soak once fixed — see `PROJECT_STATUS.md`.
   → only then: Hermes/Phase 1 begins
 ```
 
@@ -473,48 +512,79 @@ implementation plan, and PROJECT_STATUS.md as the current session state
 few places, so trust it for "what's actually done" and ROADMAP.md for
 "what each checkpoint requires."
 
-Phases 0 through 0.6 are done. Phase 0.7 is resolved — do NOT re-open
-the reconciliation investigation; PROJECT_STATUS.md already documents the
-finding (AutonomousEngine itself reproduced the bugs, not just wasn't
-wired in) and ROADMAP.md's Phase 0.7 section has been corrected to match.
-Phase 0.8's checkpoints 0.8A1 through 0.8C are COMPLETE and independently
-verified — do not redo, re-litigate, or re-implement any of them. **0.8D
-is NOT complete** — its tools (verify_audit.py, replay_audit.py) are
-built and independently verified against real corruption cases, but per
-ROADMAP.md's own DoD, 0.8D's final and defining item is a clean 24-hour
-soak with both tools reporting zero failures against real output ("PASS
-— 0.8A1 through 0.8D all hold simultaneously on the same soak run") —
-that has not happened yet. Do not mark 0.8D complete, do not start 0.8E
-formally, and do not touch the verifier/db/schema code without checking
-PROJECT_STATUS.md first — there is almost certainly already a specific,
-hard-won reason those look the way they do.
+CURRENT STATE — Phase 0.8 is COMPLETE. Do not re-open, re-verify, or
+re-implement any of the following; all of it is independently confirmed,
+not self-reported:
 
-CURRENT STATE: a second 24h+ soak is running on the VPS (started
-2026-08-07 14:52:33 UTC, target completion 2026-08-08 14:52:33 UTC) as
-the official Phase 0.8 evidence run — a first soak ran clean
-operationally but was invalidated by a JSONL-sync gap since fixed (see
-PROJECT_STATUS.md for the full incident). The IDE does not control the
-VPS and should not attempt to. Do not touch main.py, src/db.py,
-src/logger.py, src/scheduler.py, src/engine.py, or anything else that
-could affect what's currently running, until the soak completes and its
-results are reviewed.
+- Phases 0 through 0.7: done (Phase 0.7 resolved/superseded by 0.8, see
+  ROADMAP.md's corrected Phase 0.7 section — do not re-open that
+  reconciliation).
+- Phase 0.8 checkpoints 0.8A1 through 0.8E: all COMPLETE & VERIFIED.
+- The Hermes gate's soak requirement is satisfied: a third 24h+ soak
+  (2026-08-08→09, 25.24 real hours) came back completely clean —
+  independently re-verified, not trusted from tool output alone: zero
+  duplicate executions, zero state-machine violations across 122 tasks,
+  budget reconciled to 8 decimals from two independent columns, zero
+  orphan rows, JSONL/SQLite parity held through the actual process
+  shutdown. Both verify_audit.py and replay_audit.py independently
+  reproduced as clean against the real files.
+- 0.8E (Regression Suite): tests/test_phase0_8e_regression.py and
+  tests/test_phase0_8e_sigterm.py cover every historical bug from this
+  phase, each verified to exercise the real production code path that
+  had the bug (not just a symptom-level check — see PROJECT_STATUS.md
+  for the specific case where a first draft needed strengthening).
+  Full suite: 97 tests, 0 failures, 1 environment-appropriate skip.
 
-WHAT TO WORK ON NOW: pre-emptive 0.8E (Regression Suite) test scaffolding
-only — 0.8E formally starts once 0.8D's soak passes, but the tests
-themselves target bugs already found and fixed, so writing them now
-doesn't depend on the soak's outcome. One permanent test per historical
-bug already found across this phase (the list is long and already known:
-0.8A1's 14-stub-row test isolation leak, 0.8A2's worker-idempotency NULL
-bug, 0.8B's missing REVIEW→REVIEW transition and watchdog warning-reset
-bug, 0.8C's BLOCKED double-counting, 0.8D's dispatch-table gap and
-interval off-by-one, the JSONL-sync gap and its AuditLogger double-write
-near-miss, and the reverted opportunity.py mock-fallback incident). These
-tests exercise already-fixed code — do not change the underlying
-implementation to make a new test pass; if a regression test fails
-against current code, that's a real regression, report it before
-touching anything.
+Two production fixes landed during this phase that must not be touched
+without a specific new reason: PRAGMA synchronous=FULL in src/db.py, and
+the SIGTERM handler in main.py (both close a real shutdown-durability
+race found during soak testing — see PROJECT_STATUS.md).
 
-Do not start Phase 1 or Hermes migration. The Hermes gate requires the
-soak to complete cleanly, both verification tools to run clean against
-its real output, and a manual audit — none of which exist yet.
+THE MANUAL AUDIT RAN (2026-08-09) AND FOUND A REAL GAP — fix required
+before the Hermes gate reopens:
+
+- **Confirmed real**: zero `TELEMETRY_REPORT` events exist anywhere in
+  the closing soak's `audit_log.jsonl` (1320 events total, all task
+  lifecycle + heartbeat + recovery — none of them `TELEMETRY_REPORT`).
+  `get_telemetry_metrics()` computes correctly when called directly
+  (0.8C proved that with unit tests), but nothing in `main.py`'s live
+  autonomous loop ever logs the result as a real audit event — it's only
+  printed to console each tick (`[HEALTH TELEMETRY Tick N] ...`). This
+  means `verify_audit.py`'s telemetry-accuracy check (built in 0.8D)
+  silently no-op'd for the entire soak (`if telemetry_events:` — empty
+  list, check skipped) instead of actually verifying anything. The soak's
+  "clean" `verify_audit.py` exit code never exercised this guarantee.
+
+- **Not real, already fixed**: a stray finding about missing `APPROVED`/
+  `DELIVERED` transition events traced to stale pre-0.8B documentation in
+  this file's own "Explicit state machine" section (already corrected
+  above) — the real system's behavior was already correct and matches
+  `ARCHITECTURE.md`. No code change needed for this one.
+
+YOUR TASK: fix the telemetry gap. Add periodic `TELEMETRY_REPORT` logging
+to `main.py`'s autonomous loop — call `logger.log_event("TELEMETRY_REPORT",
+{"telemetry": db.get_telemetry_metrics()})` at a sensible interval (e.g.
+once per tick, or once per N ticks if that's too frequent — use judgment,
+but it must fire during real operation, not just be computable on
+request). Add a regression test confirming a live-run TELEMETRY_REPORT
+event's values match a direct `get_telemetry_metrics()` call at the same
+moment. Run the full suite. This does not require touching the durability
+fix (`PRAGMA synchronous=FULL`, the SIGTERM handler) or any other
+0.8A-0.8E code — leave those alone.
+
+Once fixed and tested: a fresh soak is needed, since this changes what
+gets written to `audit_log.jsonl` (a new event type appearing) and the
+Hermes gate's own rule is "no exceptions for 'it's probably fine now' —
+re-run both tools on fresh data." This fix is narrow and well-understood
+compared to the previous two soak-invalidating bugs, so it's reasonable
+to expect this one closes cleanly — but that's an expectation, not a
+substitute for re-running it.
+
+DO NOT start Phase 1 or Hermes migration work. Do not attempt or simulate
+the manual audit yourself — that's a human task. If there is no other
+task assigned beyond this fix, do not invent one — ask what's next rather
+than assuming Phase 1 groundwork is welcome, since ARCHITECTURE.md's
+Governing Rule requires two real callers before any new abstraction, and
+nothing past this gate has been
+scoped yet.
 ```

@@ -22,6 +22,8 @@ def resolve_db_path(db_path: str = DEFAULT_DB_PATH) -> str:
     """Resolves database path deterministically. If in test mode and requesting a relative DB path,
     isolates to a temporary test DB directory to prevent test suite from touching production DB.
     """
+    if not db_path:
+        db_path = DEFAULT_DB_PATH
     if os.path.isabs(db_path):
         return db_path
     
@@ -36,6 +38,8 @@ def resolve_log_path(log_path: str = DEFAULT_LOG_PATH) -> str:
     """Resolves audit log JSONL filepath deterministically. If in test mode and requesting a relative log path,
     isolates to a temporary test directory to prevent test suite from touching production audit log file.
     """
+    if not log_path:
+        log_path = DEFAULT_LOG_PATH
     if os.path.isabs(log_path):
         return log_path
     
