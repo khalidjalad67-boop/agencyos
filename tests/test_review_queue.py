@@ -270,5 +270,85 @@ class TestReviewQueue(unittest.TestCase):
         decision_tick3 = self.approval_gate.request_approval(opp, task_spec, worker_res, review_res)
         self.assertIsNone(decision_tick3, "Subsequent ticks must continue returning None until human action")
 
+    def test_detect_hedge_language(self):
+        """Confirm hedge language detection identifies all specified phrases case-insensitively."""
+        from tools.review_queue import detect_hedge_language
+        
+        sample_hedge_text = (
+            "Here is a Conceptual Patch for the issue. Note: the actual implementation "
+            "would require further refactoring. In principle, this illustrative simplified pseudo-code works."
+        )
+        detected = detect_hedge_language(sample_hedge_text)
+        self.assertIn("conceptual patch", detected)
+        self.assertIn("the actual implementation", detected)
+        self.assertIn("in principle", detected)
+        self.assertIn("illustrative", detected)
+        self.assertIn("simplified", detected)
+        self.assertIn("pseudo-code", detected)
+
+        clean_text = "def fix_parser(): return parse_tokens(strict=True)"
+        self.assertEqual(detect_hedge_language(clean_text), [])
+
+    def test_explain_task(self):
+        """Confirm explain_task produces clean formatted output for both hedge and non-hedge tasks."""
+        from tools.review_queue import explain_task
+        
+        engine = self._create_engine(MockLLMReviewer(passed=True, score=0.95, review_method="llm_judged"))
+        opp = Opportunity(
+            id="opp_explain_test",
+            title="Fix SSL handshake deadlock",
+            description="Race condition in SSL connection wrap.",
+            source="github",
+            payload={"repo": "psf/requests", "issue_number": 606}
+        )
+        task_id = self._seed_task(opp)
+        engine.process_task(task_id)
+
+        # Call explain_task and verify it returns True
+        success = explain_task(task_id, db=self.db)
+        self.assertTrue(success)
+
+        # Non-existent task returns False
+        self.assertFalse(explain_task("non_existent_id", db=self.db))
+
+    def test_list_queue_displays_hedge_warning(self):
+        """Confirm list_queue detects hedge language in pending task output."""
+        class MockHedgeWorker:
+            def execute(self, task_spec):
+                return WorkerResult(
+                    opportunity_id=task_spec.opportunity_id,
+                    output="This is an illustrative conceptual patch with placeholder logic.",
+                    execution_time_sec=0.05,
+                    actual_cost=0.0001,
+                    prompt_tokens=100,
+                    completion_tokens=200,
+                    model="gemini-3.5-flash-lite"
+                )
+
+        engine = AutonomousEngine(
+            db=self.db,
+            quality_scorer=OpportunityQualityScorer(),
+            planner=Planner(),
+            budget_guard=BudgetGuard(db=self.db, log_filepath=self.log_path),
+            worker=MockHedgeWorker(),
+            reviewer=MockLLMReviewer(passed=True, score=0.90, review_method="llm_judged"),
+            approval_gate=self.approval_gate,
+            logger=self.logger,
+            log_filepath=self.log_path
+        )
+        opp = Opportunity(
+            id="opp_hedge_list",
+            title="Broken C patch",
+            description="Patch with conceptual language.",
+            source="github",
+            payload={"repo": "python/cpython", "issue_number": 707}
+        )
+        task_id = self._seed_task(opp)
+        engine.process_task(task_id)
+
+        queued = list_queue(db=self.db)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0]["task_id"], task_id)
+
 if __name__ == "__main__":
     unittest.main()
