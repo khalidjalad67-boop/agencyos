@@ -17,9 +17,31 @@ decisions made in conversation that aren't written into those docs yet.
   boxes checked while the verification flag said the opposite — that
   contradiction is now fixed). Phase 0.8's checkpoints are the real,
   independently-verified source of truth for these guarantees.
-- **Phase 0.8 (Engine Stabilization): ALL CHECKPOINTS 0.8A1–0.8E
-  COMPLETE & VERIFIED. Manual audit ran and found one real gap — fix in
-  progress, fresh soak needed after.**
+- **Phase 0.8 (Engine Stabilization): COMPLETE. HERMES GATE SUPERSEDED BY SYSTEMD GATE — CLOSED ✅ (2026-08-15).** Process supervision is systemd, not Hermes (see standing decision above).
+  All checkpoints 0.8A1–0.8E verified. Fourth soak (2026-08-10→11,
+  24.29h, 1760 audit_log rows = 1760 JSONL lines, 351 `TELEMETRY_REPORT`
+  events with values confirmed correct and monotonic throughout) is the
+  soak of record. Manual audit sign-off given 2026-08-11, confirmed
+  against the correct soak's files after an initial mix-up where a
+  second AI assistant's audit had checked the *third* soak's numbers
+  (25.24h, 1320 rows, 0 `TELEMETRY_REPORT`) — the exact soak the
+  telemetry-gap fix was written to supersede. Also flagged and correctly
+  rejected: a claimed `APPROVED`/`DELIVERED` state-machine gap, which is
+  the same already-resolved false alarm from the third-soak audit,
+  raised again by not having read `ARCHITECTURE.md`'s Task State Machine
+  section (which explicitly documents those states as intentionally not
+  persisted) — see lesson below.
+  - Tagged `v0.8-stable`, soak artifacts backed up as
+    `agencyos.db.v0.8-soak` / `audit_log.jsonl.v0.8-soak`.
+  - **systemd boundary test: PASS ✅ (2026-08-15, idle-restart variant).** Run live against the production VPS (vmi3481882), evidence captured directly, not claimed:
+    - Unit installed at `/etc/systemd/system/agencyos.service` (`Restart=on-failure`, `RestartSec=5`). Zero changes to AgencyOS code or repo — `git status` clean before and after, only the same pre-existing untracked files (`.venv`, soak backups).
+    - Baseline: 170 tasks (169 `COMPLETED`, 1 `QUALITY_REJECTED`), `audit_log` max id 2073.
+    - `kill -9` issued against PID 188739 at 2026-08-15 01:35:24 UTC.
+    - systemd detected the kill the same second (`code=killed, status=9/KILL`) and restarted the process at 01:35:29 — exactly the configured 5s `RestartSec` — new PID 189279.
+    - AgencyOS's own recovery fired correctly: `STARTUP_RECOVERY_STARTED` (audit id 2074, `total_tasks`: 170) → `STARTUP_RECOVERY_COMPLETED` (audit id 2075, `recovered_tasks`: 0, `reset_tasks`: 0, `ignored_tasks`: 169).
+    - Post-state identical to baseline: still 170 tasks, still 169 `COMPLETED` / 1 `QUALITY_REJECTED`. All 6 new audit rows (ids 2074–2079) individually accounted for: the recovery pair, 2 `SCHEDULER_HEARTBEAT`, 2 `TELEMETRY_REPORT` — nothing unexplained, no duplicate execution, no duplicate cost.
+    - Caveat, not a blocker: no task was `EXECUTING` at kill time (queue was idle), so this specifically proves systemd-detect + cold-recovery, not systemd-detect + interrupted-task-recovery. The interrupted-task case was already proven once, separately, in Phase 0.8B's own SIGKILL test (without systemd in the loop). Not required to reopen this gate — logged as a minor follow-up: repeat just the kill/recovery check next time AgencyOS is naturally mid-task, opportunistically, not as a blocking requirement.
+    - Gate closed. Phase 1 (Kernel Foundations) is now open.
   - **0.8A1 (Database Schema): COMPLETE & VERIFIED ✅.** Deterministic
     path resolution, 12-state `CHECK` constraint, `UNIQUE(opportunity_id)`,
     `FOREIGN KEY ON DELETE RESTRICT`, legacy orphan quarantine (23 rows,
@@ -198,15 +220,40 @@ decisions made in conversation that aren't written into those docs yet.
        verifying anything (`if telemetry_events:` — empty list, check
        skipped). The soak's clean `verify_audit.py` exit code never
        exercised this guarantee at all.
-  - **Fix needed before re-audit**: `main.py` must periodically log a
-    real `TELEMETRY_REPORT` event (not just print to console) during the
-    autonomous loop, plus a regression test confirming a live-run event's
-    values match a direct `get_telemetry_metrics()` call. This is narrow
-    and well-understood, unlike the previous two soak-invalidating bugs
-    — but per the Hermes gate's own rule, still requires a fresh soak
-    once fixed, since it changes what's written to `audit_log.jsonl`.
-- **Do not start Phase 1 until Phase 0.8's Hermes gate DoD is confirmed
-  with real data from a soak that hasn't been invalidated.**
+  - **Fourth soak (2026-08-10→11, 24.29h): CLEAN, INCLUDING THE
+    TELEMETRY FIX.** Independently re-verified from scratch: zero
+    duplicate executions, zero state-machine violations across 132
+    tasks, budget reconciling to 8 decimals, zero orphans, JSONL/SQLite
+    parity exact (1760=1760) through the real shutdown, zero backwards
+    timestamps, genuinely diverse real data. **The specific gap the
+    third-soak manual audit found is confirmed fixed**: 351
+    `TELEMETRY_REPORT` events (one per tick, matching
+    `SCHEDULER_HEARTBEAT` exactly, not zero this time). Checked
+    specifically — not just presence, but correctness — at 5 points
+    spread across the run (start, 25%, 50%, 75%, end): every sampled
+    snapshot's `total_tasks`/`successful_executions` was internally
+    consistent, and across all 351 events the values were monotonically
+    non-decreasing (105→132, never dipped or drifted). Final snapshot
+    matches raw DB state exactly: `total_tasks`, `successful_executions`,
+    `total_cost` all exact, `categories_partition_total: True`,
+    `cost_reconciled: True`.
+  - **Manual audit: SIGNED OFF 2026-08-11 ✅.** After a second AI
+    assistant's review initially cited the wrong soak (the third,
+    pre-telemetry-fix run) and a since-resolved `APPROVED`/`DELIVERED`
+    false alarm, the human confirmed the fourth soak's files directly on
+    the VPS — `audit_log rows: 1760`, `TELEMETRY_REPORT count: 351`,
+    start/end timestamps matching exactly — before giving sign-off. This
+    is the real gate closure: confirmed against the correct evidence,
+    not assumed. Tagged `v0.8-stable`; soak artifacts backed up as
+    `agencyos.db.v0.8-soak` / `audit_log.jsonl.v0.8-soak`.
+- **Phase 1 (Kernel Foundations): IMPLEMENTED, PENDING HUMAN SIGN-OFF (2026-08-17).** Code and test evidence reviewed and found sound — awaiting explicit human confirmation before this phase is marked complete.
+  - **Policy Engine**: Flat YAML configuration `config/settings.yaml` establishes explicit rules for `budget` (per-task $0.25 ceiling, daily $2.00 limit, hard stop), `quality` (min description length = 1, structural reject labels), `approval` (auto_approve rule), `watchdog` (consecutive failure threshold, cooldown duration, heartbeat/stall multipliers), `scheduler` (tick interval, backoff multiplier, max idle interval), and `network` retries/timeouts.
+  - **Event Bus**: Explicitly evaluated and deferred per Governing Rule — AgencyOS remains a single-writer sequential pipeline with exactly one consumer; no second caller exists to justify multi-consumer dispatch.
+  - **Cost-Per-Task Visibility**: First-class `cost` attribute populated on all task records (`get_task`, `get_tasks_by_state`, `get_all_tasks`), dedicated SQL query method `Database.get_task_cost(task_id)`, `TASK_COMPLETED` audit event payload `cost`, `budget` table spend rows, and independent reconciliation via `get_telemetry_metrics()` and `verify_audit.py`.
+  - **Definition of Done satisfied**:
+    1. Phase 0 loop runs unattended except at defined approval gates (verified in `tests/test_phase1.py` with both autonomous approvals and human approval gate rejections).
+    2. A cost-per-task number is visible for every completed task (verified in `tests/test_phase1.py` across single tasks and batch execution).
+  - Full test suite: 102 tests passing (98 regression + 4 Phase 1 unit/integration tests), 0 failures, 1 environment skip (Linux SIGTERM stress test).
 
 ## Hard-won lessons from this build (apply going forward)
 
@@ -257,6 +304,16 @@ decisions made in conversation that aren't written into those docs yet.
    gate item separate from the automated tools — an automated verifier
    can only catch what it's given data to check against, and won't
    necessarily notice when the data itself is missing.
+8. **When multiple tools/sessions are checking the same evidence, always
+   confirm which artifact is actually in front of them.** A second AI
+   assistant's audit cited the third soak's exact numbers (25.24h, 1320
+   rows, 0 `TELEMETRY_REPORT`) as reason to block the Hermes gate — but
+   that was the pre-fix soak the telemetry work was written to
+   supersede, not the current fourth soak. Caught by asking for a live
+   re-query against the actual VPS files rather than trusting numbers
+   pasted from elsewhere. With four soak runs' worth of similarly-named
+   files having existed over this phase, "which run is this" is now a
+   standing question worth asking explicitly, not assuming.
 
 ## Standing decisions made in conversation (not yet in ROADMAP/ARCHITECTURE)
 
@@ -266,10 +323,7 @@ decisions made in conversation that aren't written into those docs yet.
   search/tagging tasks but explicitly **not wired in yet** — current cost
   (~$0.008/task) has ~1000x headroom under the $0.25 budget ceiling, so this
   is deferred until real volume justifies it.
-- **Hermes migration timing**: migrate the *proven* Phase 0.x pipeline into
-  Hermes right before Phase 1 (Kernel Foundations) begins — not before, not
-  after full project completion. Rationale: Hermes's native memory/skills
-  system likely covers much of what Phase 1 would otherwise hand-build.
+- **Process supervision**: RESOLVED: systemd, not Hermes (2026-08-15). systemd keeps AgencyOS alive and restarts it on failure. AgencyOS is not modified to accommodate systemd; its existing SQLite startup recovery handles internal state. Hermes is evaluated and explicitly deferred for process supervision.
 - **Antigravity vs. Claude Code vs. Hermes**: Antigravity's Mission Control
   suits later multi-department parallel execution (Phase 5+); Claude Code's
   subagent model suits single-department pipelines (current); Hermes is the
@@ -285,24 +339,7 @@ decisions made in conversation that aren't written into those docs yet.
 
 ## Immediate next actions, in order
 
-1. Fix the confirmed gap: `main.py`'s autonomous loop must periodically
-   log a real `TELEMETRY_REPORT` audit event (`logger.log_event(
-   "TELEMETRY_REPORT", {"telemetry": db.get_telemetry_metrics()})`), not
-   just print telemetry to console each tick. Add a regression test
-   confirming a live-run event's values match a direct
-   `get_telemetry_metrics()` call at the same moment. Run the full
-   suite. Do not touch the durability fix (`PRAGMA synchronous=FULL`,
-   the SIGTERM handler) or any other 0.8A–0.8E code while doing this.
-2. Once fixed and tested: a fresh soak is required — the Hermes gate's
-   own rule is "no exceptions for 'it's probably fine now,'" and this
-   change alters what gets written to `audit_log.jsonl`. Expected to be
-   narrower/faster to resolve than the previous two soak-invalidating
-   bugs, but that's an expectation, not a substitute for re-running it.
-3. Re-run the manual audit against the new soak's real files — same
-   rigor as before, specifically re-checking that `TELEMETRY_REPORT`
-   events now exist and their values are correct against raw DB counts.
-4. Once the manual audit passes: the full Hermes gate is satisfied
-   (0.8A–0.8E, the clean soak, both verification tools clean, manual
-   audit). Migrate the pipeline to Hermes.
-5. Only then begin Phase 1 (Event Bus / Policy Engine — build only what
-   Hermes doesn't already cover).
+1. **Phase 1 — Kernel Foundations: implemented, awaiting explicit human sign-off.** Do not begin Phase 2 until that sign-off is given.
+2. Once signed off: Phase 2 — First Real Business Unit (Software Agency) becomes the next task. Not started.
+3. **Optional, non-blocking**: opportunistically repeat the systemd kill test while a task is genuinely EXECUTING, to close the one caveat from the 2026-08-15 test. Not required before or during Phase 2 work.
+

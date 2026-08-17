@@ -77,6 +77,13 @@ def verify_audit(db_path: str, log_path: str) -> Tuple[bool, List[str]]:
         st = r["state"]
         if st not in LEGAL_TRANSITIONS and st not in TERMINAL_STATES:
             errors.append(f"Task '{r['task_id']}' is in an illegal state '{st}'.")
+        if st == "COMPLETED":
+            w_res = json.loads(r["worker_result_json"]) if r["worker_result_json"] else None
+            r_res = json.loads(r["review_result_json"]) if r["review_result_json"] else None
+            if not w_res or "actual_cost" not in w_res:
+                errors.append(f"Completed task '{r['task_id']}' missing worker actual_cost in worker_result_json.")
+            if not r_res or "review_cost" not in r_res:
+                errors.append(f"Completed task '{r['task_id']}' missing review_cost in review_result_json.")
 
     # Duplicate opportunity IDs beyond logged retries check
     for opp_id, count in opp_counts.items():
@@ -102,7 +109,10 @@ def verify_audit(db_path: str, log_path: str) -> Tuple[bool, List[str]]:
         elif ev_type == "WORKER_EXECUTED": implied_from_to = ("EXECUTING", "EXECUTING")
         elif ev_type == "REVIEW_COMPLETED": implied_from_to = ("EXECUTING", "REVIEW")
         elif ev_type == "TASK_WAITING_APPROVAL": implied_from_to = ("REVIEW", "WAITING_APPROVAL")
-        elif ev_type == "TASK_COMPLETED": implied_from_to = ("WAITING_APPROVAL", "COMPLETED")
+        elif ev_type == "TASK_COMPLETED":
+            implied_from_to = ("WAITING_APPROVAL", "COMPLETED")
+            if "cost" not in payload:
+                errors.append(f"TASK_COMPLETED event for task '{tid}' missing 'cost' in payload.")
         elif ev_type == "BUDGET_BLOCKED": implied_from_to = ("PLANNED", "BLOCKED")
         elif ev_type == "WORKER_FAILED": implied_from_to = ("EXECUTING", "WORKER_FAILED")
         elif ev_type == "TASK_BLOCKED": implied_from_to = ("WAITING_APPROVAL", "BLOCKED")

@@ -1,4 +1,6 @@
+import os
 import sys
+import yaml
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, Callable, Optional
 from src.opportunity import Opportunity
@@ -24,10 +26,25 @@ class ApprovalGate:
     def __init__(
         self,
         db: Optional[Database] = None,
-        decision_provider: Optional[Callable[[Opportunity, TaskSpec, WorkerResult, ReviewResult], ApprovalDecision]] = None
+        decision_provider: Optional[Callable[[Opportunity, TaskSpec, WorkerResult, ReviewResult], ApprovalDecision]] = None,
+        config_path: str = "config/settings.yaml"
     ):
         self.db = db or Database()
         self.decision_provider = decision_provider
+        self.config_path = config_path
+        self.auto_approve = True
+        self._load_config()
+
+    def _load_config(self) -> None:
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                    appr_cfg = cfg.get("approval", {})
+                    if "auto_approve" in appr_cfg:
+                        self.auto_approve = bool(appr_cfg["auto_approve"])
+            except Exception:
+                pass
 
     def request_approval(
         self,
@@ -59,10 +76,13 @@ class ApprovalGate:
             return decision
 
         # Default non-interactive autonomous resolution
+        approved = self.auto_approve
+        comments = "Autonomous non-interactive approval" if approved else "Autonomous non-interactive hold (auto_approve is disabled)"
+        status = "APPROVED" if approved else "REJECTED"
         decision = ApprovalDecision(
             opportunity_id=opportunity.id,
-            approved=True,
-            comments="Autonomous non-interactive approval"
+            approved=approved,
+            comments=comments
         )
-        self.db.save_approval(approval_id, opportunity.id, "APPROVED", decision.comments)
+        self.db.save_approval(approval_id, opportunity.id, status, decision.comments)
         return decision

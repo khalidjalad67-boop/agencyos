@@ -234,7 +234,7 @@ independently-verified status of each of these guarantees.
 
 ---
 
-## Phase 0.8 — Engine Stabilization [0.8A1–0.8E COMPLETE ✅ — MANUAL AUDIT FOUND A REAL GAP, FIX + FRESH SOAK REQUIRED]
+## Phase 0.8 — Engine Stabilization [COMPLETE ✅ — HERMES GATE CLOSED]
 
 > **Governing Principle**: A loop that produces plausible-looking telemetry is not the same as a loop that is correct. Verify against raw artifacts — DB rows and log events, not summaries — every time.
 
@@ -391,25 +391,33 @@ Strictly sequential — no parallel work, no "almost done":
 
 ```
 0.8A1 PASS ✅ → 0.8A2 PASS ✅ → 0.8B PASS ✅ → 0.8C PASS ✅ → 0.8D PASS ✅ → 0.8E PASS ✅
-  → fresh 24-hour soak on clean artifacts PASS ✅ (third attempt,
-    2026-08-08→09, 25.24h — first two soaks found and fixed real bugs;
-    third came back clean: independently re-verified, zero duplicate
-    executions, zero state-machine violations, budget reconciled to 8
-    decimals, JSONL/SQLite parity held through actual shutdown)
-  → verify_audit.py: zero failures ✅ (independently reproduced, not
-    trusted from pasted output)
+  → fresh 24-hour soak on clean artifacts PASS ✅ (fourth attempt,
+    2026-08-10→11, 24.29h — soak of record. First soak invalidated by a
+    JSONL-sync gap; second by a shutdown-durability race; third by a
+    missing TELEMETRY_REPORT audit trail (both tools passed anyway
+    because verify_audit.py's telemetry check silently no-ops on empty
+    data); fourth came back clean on all counts including the fix:
+    1760 audit_log rows = 1760 JSONL lines, 351 TELEMETRY_REPORT events
+    with values confirmed correct and monotonic throughout, zero
+    duplicate executions, zero state-machine violations across 132
+    tasks, budget reconciled to 8 decimals, zero orphans — independently
+    re-verified, not trusted from pasted output)
+  → verify_audit.py: zero failures ✅ (independently reproduced against
+    the fourth soak's real files)
   → replay_audit.py: zero diffs ✅ (same)
-  → manual audit: FAILED FIRST ATTEMPT ❌ (2026-08-09) — found 2 issues:
-    (1) audit trail didn't show `APPROVED`/`DELIVERED` transitions —
-    traced to stale pre-0.8B documentation in this file, not a code bug
-    (corrected above; real system behavior already matched
-    `ARCHITECTURE.md` correctly); (2) **real gap, confirmed**: zero
-    `TELEMETRY_REPORT` events in the entire closing soak, meaning
-    `verify_audit.py`'s telemetry-accuracy check silently no-op'd the
-    whole run instead of actually verifying anything. Must fix: the live
-    autonomous loop needs to periodically log a real `TELEMETRY_REPORT`
-    event, not just compute metrics for console display. Requires a
-    fresh soak once fixed — see `PROJECT_STATUS.md`.
+  → manual audit: PASSED ✅ (2026-08-11) — first attempt on the third
+    soak found the real TELEMETRY_REPORT gap (see above, now fixed) plus
+    a false alarm about missing `APPROVED`/`DELIVERED` transitions
+    (stale pre-0.8B documentation, corrected, not a code bug). A second
+    review pass, from a different AI assistant, initially blocked sign-
+    off again by citing the *third* soak's numbers (1320 rows, 0
+    TELEMETRY_REPORT) rather than the fourth — caught by having the
+    human directly re-query the actual current VPS files before
+    accepting either verdict. Final sign-off confirmed against the
+    correct evidence: `audit_log rows: 1760`, `TELEMETRY_REPORT count:
+    351`, timestamps matching the fourth soak exactly.
+  → GATE CLOSED. Tagged `v0.8-stable`; soak artifacts preserved as
+    `agencyos.db.v0.8-soak` / `audit_log.jsonl.v0.8-soak`.
   → only then: Hermes/Phase 1 begins
 ```
 
@@ -417,11 +425,12 @@ No exceptions for "it's probably fine now" — re-run both tools on fresh data b
 
 ---
 
-## Phase 1 — Kernel Foundations
+## Phase 1 — Kernel Foundations [IMPLEMENTED — PENDING SIGN-OFF]
 
 Only build what Phase 0/0.5 is genuinely straining against:
-- **Event Bus** — only if more than one worker needs to react to task state
-- **Policy Engine** — starts as a config file of rules, not a service
+- **Event Bus** — evaluated and deferred (single-writer sequential pipeline with 1 consumer today; zero real callers exist for multi-consumer dispatch per Governing Rule).
+- **Policy Engine** — implemented as a flat config file of rules (`config/settings.yaml`) defining budget limits, quality thresholds, approval behavior, watchdog triggers, scheduler intervals, and network timeouts.
+- **Cost-Per-Task Visibility** — directly surfaced as a top-level `cost` attribute on task records in `get_task()`, `get_tasks_by_state()`, `get_all_tasks()`, and via `Database.get_task_cost(task_id)`, backed by `TASK_COMPLETED` audit payloads and `budget` table spend rows.
 
 > *Note: Audit Log and Budget Manager are already fully satisfied by `src/logger.py` and `src/budget_guard.py` built in Phase 0 / 0.5 — no rebuild needed.*
 
@@ -505,86 +514,17 @@ Governing Rule in ARCHITECTURE.md.
 ## Next Prompt for the Agentic IDE
 
 ```
-Read ARCHITECTURE.md, ROADMAP.md, and PROJECT_STATUS.md completely. Treat
-ARCHITECTURE.md as the stable source of truth, ROADMAP.md as the
-implementation plan, and PROJECT_STATUS.md as the current session state
-— it is ahead of what's checked into ROADMAP.md's checkpoint text in a
-few places, so trust it for "what's actually done" and ROADMAP.md for
-"what each checkpoint requires."
+Read ARCHITECTURE.md, ROADMAP.md, and PROJECT_STATUS.md completely.
 
-CURRENT STATE — Phase 0.8 is COMPLETE. Do not re-open, re-verify, or
-re-implement any of the following; all of it is independently confirmed,
-not self-reported:
+CURRENT STATE — Phase 0 through Phase 0.8 are COMPLETE and
+independently verified (systemd boundary test PASSED 2026-08-15,
+Hermes deferred). Phase 1 (Kernel Foundations) has been implemented
+— flat Policy Engine config, cost-per-task visibility, Event Bus
+correctly deferred per the Governing Rule — and is PENDING HUMAN
+SIGN-OFF. It is not yet marked complete in this file.
 
-- Phases 0 through 0.7: done (Phase 0.7 resolved/superseded by 0.8, see
-  ROADMAP.md's corrected Phase 0.7 section — do not re-open that
-  reconciliation).
-- Phase 0.8 checkpoints 0.8A1 through 0.8E: all COMPLETE & VERIFIED.
-- The Hermes gate's soak requirement is satisfied: a third 24h+ soak
-  (2026-08-08→09, 25.24 real hours) came back completely clean —
-  independently re-verified, not trusted from tool output alone: zero
-  duplicate executions, zero state-machine violations across 122 tasks,
-  budget reconciled to 8 decimals from two independent columns, zero
-  orphan rows, JSONL/SQLite parity held through the actual process
-  shutdown. Both verify_audit.py and replay_audit.py independently
-  reproduced as clean against the real files.
-- 0.8E (Regression Suite): tests/test_phase0_8e_regression.py and
-  tests/test_phase0_8e_sigterm.py cover every historical bug from this
-  phase, each verified to exercise the real production code path that
-  had the bug (not just a symptom-level check — see PROJECT_STATUS.md
-  for the specific case where a first draft needed strengthening).
-  Full suite: 97 tests, 0 failures, 1 environment-appropriate skip.
-
-Two production fixes landed during this phase that must not be touched
-without a specific new reason: PRAGMA synchronous=FULL in src/db.py, and
-the SIGTERM handler in main.py (both close a real shutdown-durability
-race found during soak testing — see PROJECT_STATUS.md).
-
-THE MANUAL AUDIT RAN (2026-08-09) AND FOUND A REAL GAP — fix required
-before the Hermes gate reopens:
-
-- **Confirmed real**: zero `TELEMETRY_REPORT` events exist anywhere in
-  the closing soak's `audit_log.jsonl` (1320 events total, all task
-  lifecycle + heartbeat + recovery — none of them `TELEMETRY_REPORT`).
-  `get_telemetry_metrics()` computes correctly when called directly
-  (0.8C proved that with unit tests), but nothing in `main.py`'s live
-  autonomous loop ever logs the result as a real audit event — it's only
-  printed to console each tick (`[HEALTH TELEMETRY Tick N] ...`). This
-  means `verify_audit.py`'s telemetry-accuracy check (built in 0.8D)
-  silently no-op'd for the entire soak (`if telemetry_events:` — empty
-  list, check skipped) instead of actually verifying anything. The soak's
-  "clean" `verify_audit.py` exit code never exercised this guarantee.
-
-- **Not real, already fixed**: a stray finding about missing `APPROVED`/
-  `DELIVERED` transition events traced to stale pre-0.8B documentation in
-  this file's own "Explicit state machine" section (already corrected
-  above) — the real system's behavior was already correct and matches
-  `ARCHITECTURE.md`. No code change needed for this one.
-
-YOUR TASK: fix the telemetry gap. Add periodic `TELEMETRY_REPORT` logging
-to `main.py`'s autonomous loop — call `logger.log_event("TELEMETRY_REPORT",
-{"telemetry": db.get_telemetry_metrics()})` at a sensible interval (e.g.
-once per tick, or once per N ticks if that's too frequent — use judgment,
-but it must fire during real operation, not just be computable on
-request). Add a regression test confirming a live-run TELEMETRY_REPORT
-event's values match a direct `get_telemetry_metrics()` call at the same
-moment. Run the full suite. This does not require touching the durability
-fix (`PRAGMA synchronous=FULL`, the SIGTERM handler) or any other
-0.8A-0.8E code — leave those alone.
-
-Once fixed and tested: a fresh soak is needed, since this changes what
-gets written to `audit_log.jsonl` (a new event type appearing) and the
-Hermes gate's own rule is "no exceptions for 'it's probably fine now' —
-re-run both tools on fresh data." This fix is narrow and well-understood
-compared to the previous two soak-invalidating bugs, so it's reasonable
-to expect this one closes cleanly — but that's an expectation, not a
-substitute for re-running it.
-
-DO NOT start Phase 1 or Hermes migration work. Do not attempt or simulate
-the manual audit yourself — that's a human task. If there is no other
-task assigned beyond this fix, do not invent one — ask what's next rather
-than assuming Phase 1 groundwork is welcome, since ARCHITECTURE.md's
-Governing Rule requires two real callers before any new abstraction, and
-nothing past this gate has been
-scoped yet.
+DO NOT begin Phase 2 or any other new phase. If you are running this
+prompt, your task is whatever the human has explicitly asked for in
+this session — this block is a placeholder until Phase 1 is signed
+off and a real Phase 2 kickoff prompt is written to replace it.
 ```

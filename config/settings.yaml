@@ -1,7 +1,32 @@
+# AgencyOS Policy Engine Configuration (Flat Rule Structure)
+# Defines operational policies, budget limits, quality thresholds, and execution guards.
+
 budget:
   per_task_limit: 0.25
   daily_limit: 2.00
   hard_stop: true
+
+quality:
+  min_description_length: 1
+  structural_reject_tags:
+    - "duplicate"
+    - "stale"
+    - "wontfix"
+    - "invalid"
+
+approval:
+  auto_approve: true
+
+watchdog:
+  consecutive_failure_threshold: 3
+  base_cooldown_sec: 30.0
+  heartbeat_warning_multiplier: 2.0
+  stall_threshold_multiplier: 5.0
+
+scheduler:
+  interval_sec: 30.0
+  idle_backoff_multiplier: 2.0
+  max_idle_interval_sec: 240.0
 
 network:
   max_retries: 3

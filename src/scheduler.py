@@ -1,5 +1,7 @@
+import os
 import time
-from typing import List, Optional, Tuple
+import yaml
+from typing import List, Optional, Tuple, Dict, Any
 from src.db import Database
 from src.opportunity import OpportunityFetcher, Opportunity
 from src.logger import AuditLogger
@@ -13,20 +15,35 @@ class Scheduler:
     def __init__(
         self,
         db: Database,
-        interval_sec: float = 30.0,
-        max_interval_sec: float = 300.0,
+        interval_sec: Optional[float] = None,
+        max_interval_sec: Optional[float] = None,
         fetcher: Optional[OpportunityFetcher] = None,
         watchdog: Optional[OperationalWatchdog] = None,
-        logger: Optional[AuditLogger] = None
+        logger: Optional[AuditLogger] = None,
+        config_path: str = "config/settings.yaml"
     ):
         self.db = db
-        self.interval_sec = interval_sec
-        self.max_interval_sec = max_interval_sec
-        self._current_interval: float = interval_sec
+        self.config_path = config_path
+        cfg = self._load_config()
+        sched_cfg = cfg.get("scheduler", {})
+
+        self.interval_sec = interval_sec if interval_sec is not None else float(sched_cfg.get("interval_sec", 30.0))
+        self.max_interval_sec = max_interval_sec if max_interval_sec is not None else float(sched_cfg.get("max_idle_interval_sec", 240.0))
+        self.backoff_multiplier = float(sched_cfg.get("idle_backoff_multiplier", 2.0))
+        self._current_interval: float = self.interval_sec
         self.fetcher = fetcher or OpportunityFetcher()
         self.watchdog = watchdog
         self.logger = logger or AuditLogger(db=self.db)
         self.last_tick_time: float = 0.0
+
+    def _load_config(self) -> Dict[str, Any]:
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+            except Exception:
+                pass
+        return {}
 
     def tick(self, opportunities_override: Optional[List[Opportunity]] = None, limit: int = 105) -> Tuple[List[str], float]:
         """Polls opportunity source and creates DISCOVERED task records in SQLite DB.
@@ -101,9 +118,9 @@ class Scheduler:
             )
             scheduled_task_ids.append(task_id)
 
-        # Idle backoff logic: double interval if queue_depth == 0 and 0 scheduled tasks
+        # Idle backoff logic: multiply interval if queue_depth == 0 and 0 scheduled tasks
         if queue_depth == 0 and len(scheduled_task_ids) == 0:
-            self._current_interval = min(self._current_interval * 2.0, self.max_interval_sec)
+            self._current_interval = min(self._current_interval * self.backoff_multiplier, self.max_interval_sec)
         else:
             self._current_interval = self.interval_sec
 

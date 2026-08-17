@@ -1,5 +1,7 @@
+import os
 import time
-from typing import Dict, Any, List, Set
+import yaml
+from typing import Dict, Any, List, Set, Optional
 from src.db import Database
 
 class OperationalWatchdog:
@@ -8,14 +10,35 @@ class OperationalWatchdog:
     Never terminates the application.
     """
 
-    def __init__(self, db: Database, failure_threshold: int = 3, base_cooldown_sec: float = 30.0):
+    def __init__(
+        self,
+        db: Database,
+        failure_threshold: Optional[int] = None,
+        base_cooldown_sec: Optional[float] = None,
+        config_path: str = "config/settings.yaml"
+    ):
         self.db = db
-        self.failure_threshold = failure_threshold
-        self.base_cooldown_sec = base_cooldown_sec
+        self.config_path = config_path
+        cfg = self._load_config()
+        watchdog_cfg = cfg.get("watchdog", {})
+
+        self.failure_threshold = failure_threshold if failure_threshold is not None else int(watchdog_cfg.get("consecutive_failure_threshold", 3))
+        self.base_cooldown_sec = base_cooldown_sec if base_cooldown_sec is not None else float(watchdog_cfg.get("base_cooldown_sec", 30.0))
+        self.heartbeat_warning_multiplier = float(watchdog_cfg.get("heartbeat_warning_multiplier", 2.0))
+        self.stall_threshold_multiplier = float(watchdog_cfg.get("stall_threshold_multiplier", 5.0))
         self.consecutive_failures: Dict[str, int] = {}
         self.disabled_sources: Dict[str, float] = {}  # source -> re_enable_timestamp
         self._in_warning: bool = False
         self._stall_active: bool = False
+
+    def _load_config(self) -> Dict[str, Any]:
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+            except Exception:
+                pass
+        return {}
 
     def _get_task_counts(self) -> Dict[str, Any]:
         tasks = self.db.get_all_tasks()
@@ -34,13 +57,13 @@ class OperationalWatchdog:
             return  # first tick, no gap to measure
         gap = now - last_heartbeat
 
-        if gap > 5.0 * interval_sec and not self._stall_active:
+        if gap > self.stall_threshold_multiplier * interval_sec and not self._stall_active:
             task_counts = self._get_task_counts()
             self.db.log_event("STALL_DETECTED", {"gap_sec": gap, **task_counts})
             self._stall_active = True
             self._in_warning = True
 
-        elif gap > 2.0 * interval_sec and not self._in_warning:
+        elif gap > self.heartbeat_warning_multiplier * interval_sec and not self._in_warning:
             self.db.log_event("WATCHDOG_WARNING", {"gap_sec": gap, "interval_sec": interval_sec})
             self._in_warning = True
 

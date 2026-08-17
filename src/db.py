@@ -236,6 +236,17 @@ class Database:
 
 
 
+    def _deserialize_task_row(self, row: Any) -> Dict[str, Any]:
+        d = dict(row)
+        d["payload"] = json.loads(d["payload_json"]) if d["payload_json"] else {}
+        d["task_spec"] = json.loads(d["task_spec_json"]) if d["task_spec_json"] else None
+        d["worker_result"] = json.loads(d["worker_result_json"]) if d["worker_result_json"] else None
+        d["review_result"] = json.loads(d["review_result_json"]) if d["review_result_json"] else None
+        w_cost = float(d["worker_result"].get("actual_cost", 0.0)) if isinstance(d["worker_result"], dict) else 0.0
+        r_cost = float(d["review_result"].get("review_cost", 0.0)) if isinstance(d["review_result"], dict) else 0.0
+        d["cost"] = round(w_cost + r_cost, 6)
+        return d
+
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._connection() as conn:
             cursor = conn.cursor()
@@ -243,42 +254,33 @@ class Database:
             row = cursor.fetchone()
             if not row:
                 return None
-            d = dict(row)
-            d["payload"] = json.loads(d["payload_json"]) if d["payload_json"] else {}
-            d["task_spec"] = json.loads(d["task_spec_json"]) if d["task_spec_json"] else None
-            d["worker_result"] = json.loads(d["worker_result_json"]) if d["worker_result_json"] else None
-            d["review_result"] = json.loads(d["review_result_json"]) if d["review_result_json"] else None
-            return d
+            return self._deserialize_task_row(row)
 
     def get_tasks_by_state(self, state: str) -> List[Dict[str, Any]]:
         with self._connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM tasks WHERE state = ?", (state,))
             rows = cursor.fetchall()
-            res = []
-            for row in rows:
-                d = dict(row)
-                d["payload"] = json.loads(d["payload_json"]) if d["payload_json"] else {}
-                d["task_spec"] = json.loads(d["task_spec_json"]) if d["task_spec_json"] else None
-                d["worker_result"] = json.loads(d["worker_result_json"]) if d["worker_result_json"] else None
-                d["review_result"] = json.loads(d["review_result_json"]) if d["review_result_json"] else None
-                res.append(d)
-            return res
+            return [self._deserialize_task_row(row) for row in rows]
 
     def get_all_tasks(self) -> List[Dict[str, Any]]:
         with self._connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM tasks")
             rows = cursor.fetchall()
-            res = []
-            for row in rows:
-                d = dict(row)
-                d["payload"] = json.loads(d["payload_json"]) if d["payload_json"] else {}
-                d["task_spec"] = json.loads(d["task_spec_json"]) if d["task_spec_json"] else None
-                d["worker_result"] = json.loads(d["worker_result_json"]) if d["worker_result_json"] else None
-                d["review_result"] = json.loads(d["review_result_json"]) if d["review_result_json"] else None
-                res.append(d)
-            return res
+            return [self._deserialize_task_row(row) for row in rows]
+
+    def get_task_cost(self, task_id: str) -> float:
+        """Returns the total cost (worker + reviewer) for a given task directly from persisted state."""
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COALESCE(json_extract(worker_result_json, '$.actual_cost'), 0.0) +
+                       COALESCE(json_extract(review_result_json, '$.review_cost'), 0.0) as cost
+                FROM tasks WHERE task_id = ?
+            """, (task_id,))
+            row = cursor.fetchone()
+            return round(float(row["cost"]), 6) if row and row["cost"] is not None else 0.0
 
     # --- APPROVALS METHODS ---
     def save_approval(self, approval_id: str, opportunity_id: str, status: str, comments: str = "") -> None:
