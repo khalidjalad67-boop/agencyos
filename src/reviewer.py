@@ -16,7 +16,7 @@ class ReviewResult:
     feedback: str
     review_cost: float
     review_tokens: int
-    review_method: str = "llm_judged"
+    review_method: str = "heuristic_fallback"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

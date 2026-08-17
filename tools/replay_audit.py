@@ -68,11 +68,11 @@ def replay_audit_log(log_path: str) -> Tuple[Dict[str, Dict[str, Any]], float, D
             elif ev_type == "TASK_WAITING_APPROVAL" and tid:
                 if tid not in reconstructed_tasks: reconstructed_tasks[tid] = {}
                 reconstructed_tasks[tid]["state"] = "WAITING_APPROVAL"
-            elif ev_type == "TASK_COMPLETED" and tid:
+            elif ev_type in ("TASK_COMPLETED", "HUMAN_APPROVAL_GRANTED") and tid:
                 if tid not in reconstructed_tasks: reconstructed_tasks[tid] = {}
                 reconstructed_tasks[tid]["state"] = "COMPLETED"
                 reconstructed_approvals[tid] = "APPROVED"
-            elif ev_type == "TASK_BLOCKED" and tid:
+            elif ev_type in ("TASK_BLOCKED", "HUMAN_APPROVAL_REJECTED") and tid:
                 if tid not in reconstructed_tasks: reconstructed_tasks[tid] = {}
                 reconstructed_tasks[tid]["state"] = "BLOCKED"
                 reconstructed_tasks[tid]["error_reason"] = f"APPROVAL_REJECTED: {payload.get('reason')}"

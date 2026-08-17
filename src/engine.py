@@ -248,16 +248,20 @@ class AutonomousEngine:
             worker_result = WorkerResult(**task["worker_result"])
             review_result = ReviewResult(**task["review_result"])
 
-            task["state"] = "WAITING_APPROVAL"
-            self.db.execute_atomic_transition(
-                task,
-                audit_event=("TASK_WAITING_APPROVAL", {
-                    "task_id": task_id,
-                    "opportunity_id": opp.id
-                })
-            )
+            if state != "WAITING_APPROVAL":
+                task["state"] = "WAITING_APPROVAL"
+                self.db.execute_atomic_transition(
+                    task,
+                    audit_event=("TASK_WAITING_APPROVAL", {
+                        "task_id": task_id,
+                        "opportunity_id": opp.id
+                    })
+                )
 
             approval_decision = self.approval_gate.request_approval(opp, task_spec, worker_result, review_result)
+            if approval_decision is None:
+                return {"status": "WAITING_APPROVAL", "task_id": task_id, "reason": "Awaiting human review"}
+
             now_time = time.time()
 
             if approval_decision.approved and review_result.passed:

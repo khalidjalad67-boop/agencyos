@@ -16,6 +16,7 @@ quality:
 
 approval:
   auto_approve: true
+  require_human_review_for_llm_judged: true
 
 watchdog:
   consecutive_failure_threshold: 3

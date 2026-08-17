@@ -425,7 +425,7 @@ No exceptions for "it's probably fine now" — re-run both tools on fresh data b
 
 ---
 
-## Phase 1 — Kernel Foundations [IMPLEMENTED — PENDING SIGN-OFF]
+## Phase 1 — Kernel Foundations [COMPLETE ✅]
 
 Only build what Phase 0/0.5 is genuinely straining against:
 - **Event Bus** — evaluated and deferred (single-writer sequential pipeline with 1 consumer today; zero real callers exist for multi-consumer dispatch per Governing Rule).
@@ -435,8 +435,8 @@ Only build what Phase 0/0.5 is genuinely straining against:
 > *Note: Audit Log and Budget Manager are already fully satisfied by `src/logger.py` and `src/budget_guard.py` built in Phase 0 / 0.5 — no rebuild needed.*
 
 **Definition of Done:**
-- [ ] Phase 0 loop runs unattended except at defined approval gates
-- [ ] A cost-per-task number is visible for every completed task
+- [x] Phase 0 loop runs unattended except at defined approval gates
+- [x] A cost-per-task number is visible for every completed task
 
 ---
 

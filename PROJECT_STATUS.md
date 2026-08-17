@@ -246,7 +246,7 @@ decisions made in conversation that aren't written into those docs yet.
     is the real gate closure: confirmed against the correct evidence,
     not assumed. Tagged `v0.8-stable`; soak artifacts backed up as
     `agencyos.db.v0.8-soak` / `audit_log.jsonl.v0.8-soak`.
-- **Phase 1 (Kernel Foundations): IMPLEMENTED, PENDING HUMAN SIGN-OFF (2026-08-17).** Code and test evidence reviewed and found sound — awaiting explicit human confirmation before this phase is marked complete.
+- **Phase 1 (Kernel Foundations): COMPLETE & VERIFIED ✅ (2026-08-17).** Signed off by the human after independent code review, raw 102-test suite output, and a live production deploy on the VPS confirming zero data loss (248 tasks before and after restart, STARTUP_RECOVERY_STARTED/COMPLETED fired correctly).
   - **Policy Engine**: Flat YAML configuration `config/settings.yaml` establishes explicit rules for `budget` (per-task $0.25 ceiling, daily $2.00 limit, hard stop), `quality` (min description length = 1, structural reject labels), `approval` (auto_approve rule), `watchdog` (consecutive failure threshold, cooldown duration, heartbeat/stall multipliers), `scheduler` (tick interval, backoff multiplier, max idle interval), and `network` retries/timeouts.
   - **Event Bus**: Explicitly evaluated and deferred per Governing Rule — AgencyOS remains a single-writer sequential pipeline with exactly one consumer; no second caller exists to justify multi-consumer dispatch.
   - **Cost-Per-Task Visibility**: First-class `cost` attribute populated on all task records (`get_task`, `get_tasks_by_state`, `get_all_tasks`), dedicated SQL query method `Database.get_task_cost(task_id)`, `TASK_COMPLETED` audit event payload `cost`, `budget` table spend rows, and independent reconciliation via `get_telemetry_metrics()` and `verify_audit.py`.
@@ -339,7 +339,7 @@ decisions made in conversation that aren't written into those docs yet.
 
 ## Immediate next actions, in order
 
-1. **Phase 1 — Kernel Foundations: implemented, awaiting explicit human sign-off.** Do not begin Phase 2 until that sign-off is given.
+1. **Phase 1 — Kernel Foundations: COMPLETE & VERIFIED ✅.** Signed off 2026-08-17.
 2. Once signed off: Phase 2 — First Real Business Unit (Software Agency) becomes the next task. Not started.
 3. **Optional, non-blocking**: opportunistically repeat the systemd kill test while a task is genuinely EXECUTING, to close the one caveat from the 2026-08-15 test. Not required before or during Phase 2 work.
 
