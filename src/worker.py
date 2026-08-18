@@ -163,8 +163,9 @@ class Worker:
             prompt_tokens = usage.get("promptTokenCount", task_spec.input_tokens)
             completion_tokens = usage.get("candidatesTokenCount", len(output_text) // 4)
             
+            # Pricing: Gemini 3.5 Flash Lite ($0.0003 / 1k input tokens, $0.0025 / 1k output tokens - as of August 2026)
             actual_cost = round(
-                (prompt_tokens / 1000.0) * 0.000075 + (completion_tokens / 1000.0) * 0.000300, 6
+                (prompt_tokens / 1000.0) * 0.0003 + (completion_tokens / 1000.0) * 0.0025, 6
             )
             return WorkerResult(
                 opportunity_id=task_spec.opportunity_id,
