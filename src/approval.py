@@ -34,6 +34,7 @@ class ApprovalGate:
         self.config_path = config_path
         self.auto_approve = True
         self.require_human_review_for_llm_judged = True
+        self.trusted_repos = []
         self._load_config()
 
     def _load_config(self) -> None:
@@ -46,6 +47,8 @@ class ApprovalGate:
                         self.auto_approve = bool(appr_cfg["auto_approve"])
                     if "require_human_review_for_llm_judged" in appr_cfg:
                         self.require_human_review_for_llm_judged = bool(appr_cfg["require_human_review_for_llm_judged"])
+                    if "trusted_repos" in appr_cfg:
+                        self.trusted_repos = list(appr_cfg.get("trusted_repos") or [])
             except Exception:
                 pass
 
@@ -59,6 +62,17 @@ class ApprovalGate:
         """Presents execution details for approval, querying/updating SQLite persistent approvals table."""
         approval_id = f"appr-{opportunity.id}"
         
+        # Determine repository for repo-scoped approval policy
+        repo = ""
+        if opportunity and hasattr(opportunity, "payload") and isinstance(opportunity.payload, dict):
+            repo = opportunity.payload.get("repo", "")
+        if not repo:
+            task_row = self.db.get_task(opportunity.id)
+            if task_row:
+                repo = task_row.get("repo", "")
+
+        is_trusted_repo = bool(repo and repo in self.trusted_repos)
+
         # Check if already decided in SQLite approvals table
         existing = self.db.get_approval(approval_id)
         if existing:
@@ -70,7 +84,8 @@ class ApprovalGate:
                     comments=existing.get("comments") or ("SQLite persisted approval" if is_approved else "SQLite persisted rejection")
                 )
             elif existing["status"] == "PENDING" and "Waiting for human review (llm_judged)" in (existing.get("comments") or ""):
-                return None
+                if not is_trusted_repo:
+                    return None
 
         # Register pending approval in SQLite if not yet existing
         if not existing:
@@ -84,18 +99,22 @@ class ApprovalGate:
                 return decision
 
         # If LLM-judged and passed, and require_human_review_for_llm_judged is True:
-        # DO NOT auto-approve. Task must remain in WAITING_APPROVAL for human review.
+        # DO NOT auto-approve unless the repo is explicitly in trusted_repos.
         if (
             getattr(review_result, "review_method", None) == "llm_judged"
             and review_result.passed
             and self.require_human_review_for_llm_judged
+            and not is_trusted_repo
         ):
             self.db.save_approval(approval_id, opportunity.id, "PENDING", "Waiting for human review (llm_judged)")
             return None
 
-        # Default non-interactive autonomous resolution (heuristic_fallback or auto_approve)
+        # Default non-interactive autonomous resolution (heuristic_fallback, trusted repo, or auto_approve)
         approved = self.auto_approve
-        comments = "Autonomous non-interactive approval" if approved else "Autonomous non-interactive hold (auto_approve is disabled)"
+        if is_trusted_repo and getattr(review_result, "review_method", None) == "llm_judged":
+            comments = f"Autonomous approval: {repo} is a trusted repository" if approved else "Autonomous non-interactive hold (auto_approve is disabled)"
+        else:
+            comments = "Autonomous non-interactive approval" if approved else "Autonomous non-interactive hold (auto_approve is disabled)"
         status = "APPROVED" if approved else "REJECTED"
         decision = ApprovalDecision(
             opportunity_id=opportunity.id,

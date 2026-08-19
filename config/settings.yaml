@@ -17,6 +17,9 @@ quality:
 approval:
   auto_approve: true
   require_human_review_for_llm_judged: true
+  trusted_repos:
+    - "pydantic/pydantic"
+    - "ansible/ansible"
 
 watchdog:
   consecutive_failure_threshold: 3

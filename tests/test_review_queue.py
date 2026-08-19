@@ -59,10 +59,11 @@ class TestReviewQueue(unittest.TestCase):
         self.db.log_filepath = self.log_path
         self.logger = AuditLogger(log_filepath=self.log_path, db=self.db)
         
-        # Approval gate with require_human_review_for_llm_judged = True
+        # Approval gate with require_human_review_for_llm_judged = True and trusted_repos
         self.approval_gate = ApprovalGate(db=self.db)
         self.approval_gate.require_human_review_for_llm_judged = True
         self.approval_gate.auto_approve = True
+        self.approval_gate.trusted_repos = ["pydantic/pydantic", "ansible/ansible"]
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -349,6 +350,88 @@ class TestReviewQueue(unittest.TestCase):
         queued = list_queue(db=self.db)
         self.assertEqual(len(queued), 1)
         self.assertEqual(queued[0]["task_id"], task_id)
+
+    def test_trusted_repo_llm_judged_auto_completes(self):
+        """Confirm a trusted-repo task (llm_judged, passed) auto-completes without entering WAITING_APPROVAL."""
+        engine = self._create_engine(MockLLMReviewer(passed=True, score=0.95, review_method="llm_judged"))
+        
+        # pydantic/pydantic is in trusted_repos
+        opp_pydantic = Opportunity(
+            id="opp_trusted_pydantic",
+            title="Fix serialization in pydantic-core",
+            description="Fix datetime serialization timezone bug.",
+            source="github",
+            payload={"repo": "pydantic/pydantic", "issue_number": 808}
+        )
+        task_id = self._seed_task(opp_pydantic)
+        result = engine.process_task(task_id)
+        
+        self.assertEqual(result["status"], "COMPLETED")
+        task = self.db.get_task(task_id)
+        self.assertEqual(task["state"], "COMPLETED")
+        
+        # Approval record should be APPROVED
+        approval = self.db.get_approval(f"appr-{opp_pydantic.id}")
+        self.assertIsNotNone(approval)
+        self.assertEqual(approval["status"], "APPROVED")
+        self.assertIn("trusted repository", approval["comments"])
+        
+        # Queue list should have 0 items
+        queued = list_queue(db=self.db)
+        self.assertEqual(len(queued), 0)
+
+        # ansible/ansible is also in trusted_repos
+        opp_ansible = Opportunity(
+            id="opp_trusted_ansible",
+            title="Fix copy module xattr preservation",
+            description="Preserve extended attributes during file copy.",
+            source="github",
+            payload={"repo": "ansible/ansible", "issue_number": 809}
+        )
+        task_id_ans = self._seed_task(opp_ansible)
+        result_ans = engine.process_task(task_id_ans)
+        self.assertEqual(result_ans["status"], "COMPLETED")
+        task_ans = self.db.get_task(task_id_ans)
+        self.assertEqual(task_ans["state"], "COMPLETED")
+
+    def test_non_trusted_repo_llm_judged_enters_waiting_approval(self):
+        """Confirm a non-trusted-repo task (e.g. cpython or unknown) still enters WAITING_APPROVAL."""
+        engine = self._create_engine(MockLLMReviewer(passed=True, score=0.95, review_method="llm_judged"))
+        
+        opp_cpython = Opportunity(
+            id="opp_untrusted_cpython",
+            title="Add curses window attribute helper",
+            description="CPython C-internals change.",
+            source="github",
+            payload={"repo": "python/cpython", "issue_number": 901}
+        )
+        task_id = self._seed_task(opp_cpython)
+        result = engine.process_task(task_id)
+        
+        self.assertEqual(result["status"], "WAITING_APPROVAL")
+        task = self.db.get_task(task_id)
+        self.assertEqual(task["state"], "WAITING_APPROVAL")
+        
+        approval = self.db.get_approval(f"appr-{opp_cpython.id}")
+        self.assertIsNotNone(approval)
+        self.assertEqual(approval["status"], "PENDING")
+        self.assertEqual(approval["comments"], "Waiting for human review (llm_judged)")
+        
+        # Queue list should contain this task
+        queued = list_queue(db=self.db)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0]["task_id"], task_id)
+
+    def test_list_queue_header_displays_trusted_repos(self):
+        """Confirm list_queue prints trusted repos in the output header."""
+        import io
+        from contextlib import redirect_stdout
+        
+        f = io.StringIO()
+        with redirect_stdout(f):
+            list_queue(db=self.db)
+        output = f.getvalue()
+        self.assertIn("Trusted repos (auto-approve): pydantic/pydantic, ansible/ansible", output)
 
 if __name__ == "__main__":
     unittest.main()

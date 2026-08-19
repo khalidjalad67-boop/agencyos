@@ -42,7 +42,20 @@ def detect_hedge_language(text: str) -> List[str]:
     text_lower = text.lower()
     return [phrase for phrase in HEDGE_PHRASES if phrase in text_lower]
 
-def list_queue(db: Optional[Database] = None, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_trusted_repos(config_path: str = "config/settings.yaml") -> List[str]:
+    """Reads trusted repos from config/settings.yaml."""
+    if os.path.exists(config_path):
+        try:
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+                appr = cfg.get("approval", {})
+                return list(appr.get("trusted_repos") or [])
+        except Exception:
+            pass
+    return []
+
+def list_queue(db: Optional[Database] = None, db_path: Optional[str] = None, config_path: str = "config/settings.yaml") -> List[Dict[str, Any]]:
     """Queries DB for all tasks in WAITING_APPROVAL state with review_method == 'llm_judged'."""
     database = db or Database(db_path=db_path)
     waiting_tasks = database.get_tasks_by_state("WAITING_APPROVAL")
@@ -53,8 +66,12 @@ def list_queue(db: Optional[Database] = None, db_path: Optional[str] = None) -> 
         if rev_res.get("review_method") == "llm_judged":
             llm_judged_tasks.append(task)
             
+    trusted = get_trusted_repos(config_path=config_path)
+    trusted_str = ", ".join(trusted) if trusted else "none"
+
     resolved_path = database.db_path
     print(f"=== AgencyOS Human Review Queue ({len(llm_judged_tasks)} pending) ===")
+    print(f"Trusted repos (auto-approve): {trusted_str}")
     if not llm_judged_tasks:
         print("No LLM-judged tasks pending in WAITING_APPROVAL queue.")
         return llm_judged_tasks

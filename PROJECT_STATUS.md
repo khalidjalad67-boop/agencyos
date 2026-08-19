@@ -254,6 +254,23 @@ decisions made in conversation that aren't written into those docs yet.
     1. Phase 0 loop runs unattended except at defined approval gates (verified in `tests/test_phase1.py` with both autonomous approvals and human approval gate rejections).
     2. A cost-per-task number is visible for every completed task (verified in `tests/test_phase1.py` across single tasks and batch execution).
   - Full test suite: 102 tests passing (98 regression + 4 Phase 1 unit/integration tests), 0 failures, 1 environment skip (Linux SIGTERM stress test).
+- **Post-Phase-1 finding and fix: Worker and Reviewer were both non-functional in production (2026-08-17/18).**
+  - **The discovery.** All 259+ tasks completed through Phase 0–0.8, including the entire soak-test history, went through a fallback code path, not a real LLM call. `src/worker.py`'s real LLM path (`_execute_gemini_http`/`_execute_openai_http`) only activates if an API key is present in the environment — none was ever set on the production VPS. Every "completed" task was a fixed template string with the issue title interpolated in, timestamped and cost-tracked as if it were real. `src/reviewer.py` had no LLM call at all — its "dynamic evaluation score" was pure keyword-overlap arithmetic against the Worker's own templated output, which is why scores clustered narrowly (0.876–0.980, the same band Phase 0.6's empirical analysis found and correctly attributed to weak correlation, without knowing the underlying cause was a template scoring itself). This was caught by first noticing the Worker's output text read like fixed boilerplate regardless of the actual issue, then confirming via direct code read.
+  - **The fix — Worker.** Real key wired in (Gemini, via `GEMINI_API_KEY` in a systemd override, `.venv` has no separate isolation from system Python). Two retired-model issues found and fixed live against real API errors, not guessed: `gemini-1.5-flash` returns 404 (retired), `gemini-2.5-flash-lite` also returns 404 (retired same window) — Google's own 404 body pointed directly at the replacement, `gemini-3.5-flash-lite`, confirmed working with a real `200` response and genuine generated text before being set as the new default. `per_repo_target` in `src/opportunity.py` widened 25→100 (all 8 configured repos' near-term issue pool had already been exhausted by the fake-output era's task volume; confirmed via direct fetch test showing 171 genuinely new opportunities once widened).
+  - **The fix — Reviewer.** Rewritten to make a real second LLM call (same model, `gemini-3.5-flash-lite`) that reads the original issue, the expected criteria, and the Worker's full output, and returns structured JSON (`passed`/`score`/`reasoning`). Heuristic keyword scoring kept only as an explicit no-key fallback, now labeled via a new `review_method` field (`llm_judged` vs `heuristic_fallback`) so the two can never again look identical in stored data. Verified via a real calibration test: correctly failed three known-fake pre-fix tasks (score 0.0 each, feedback correctly identifying "generic boilerplate") and correctly passed the first genuine post-fix task (score 0.95, feedback specific to the actual proposal).
+  - **A real, confirmed limitation found the same night.** The LLM-judged Reviewer passed a CPython `_cursesmodule.c` proposal at 1.0 (maximum score) that a human read caught as containing invented C symbols (`WINDOW_ATTRIBUTES`, `WINDOW_RESTORE_ATTRIBUTES` — not real ncurses/CPython macros) and a fabricated Python API (`stdscr.getattrs()` — does not exist), plus a test that would fail to even import (missing `self` in a `unittest.TestCase` method). A second CPython task (`typeobject.c` memory management) was individually checked and failed the same way — also scored highly, also invented symbols, also self-labeled "conceptual patch" in its own output. **Confirmed pattern, not a one-off**: the Reviewer judges plausibility and structure, not actual correctness — it has no mechanism to verify a symbol exists or code compiles. This concentrates specifically in C/interpreter-internals work, where jargon-fluency is easy to fake and hard to catch without either compiling the code or being a domain expert.
+  - **Contrasting calibration data, same night, other repos.** A `pydantic-core` proposal (Python-level API design, `to_json`/date-serialization) and an `ansible` proposal (Python-level module code, xattr preservation in the `copy` module) were both individually read in full and held up: real function/module names throughout, syntactically valid code and tests, no fabricated symbols. One further pydantic task was flagged and rejected specifically because the Reviewer's own feedback used the word "conceptual implementation" — the same hedge-language pattern that predicted both confirmed CPython failures.
+  - **Working calibration read as of tonight (not yet exhaustively proven — see gaps below): Python-level application/library code (pydantic, ansible) is trustworthy from this pipeline; CPython C-internals work is not.** Treat this as a strong lead, not a settled fact — see "Known gaps" below.
+  - **The human review gate — built, and a real bug in it caught before deployment.** `ARCHITECTURE.md` requires human approval before consequential actions; "marking AI-proposed work as done" now qualifies, since Worker output is real. Added `require_human_review_for_llm_judged` config flag: any task that is `review_method == llm_judged` and `passed == true` now routes to `WAITING_APPROVAL` instead of auto-completing, regardless of the global `auto_approve` setting. A new CLI tool, `tools/review_queue.py` (`list` / `explain <id>` / `approve <id>` / `reject <id> --reason`), lets a human inspect and decide without needing to read code — `list` shows score/feedback plus an automatic hedge-language warning (deterministic keyword scan for phrases like "conceptual patch", "illustrative", "the actual implementation" — not an LLM call, kept free and reliable); `explain` prints a full, clean, copy-paste-ready block (issue, instruction, full worker output, full review) suitable for pasting into a second AI chat for a non-coding human to get a plain-English second opinion.
+  - **Real bug found and fixed before this reached the VPS**: the initial implementation only checked `request_approval()`'s existing approval status against `("APPROVED", "REJECTED")` — a task sitting at `PENDING` (the new hold state) fell through on its second scheduler tick to the default auto-approve path, silently auto-completing itself roughly one scheduler interval after entering the queue. Caught by tracing the code path before deployment, not after. Fixed by adding an explicit `PENDING` + hold-comment check that keeps returning the hold decision on every subsequent call. Regression test added that specifically simulates two calls to `request_approval()` on the same task (the exact scenario that exposed the bug) — confirmed to fail against the pre-fix code and pass against the fix.
+  - **Real-world use, night one**: 13 tasks accumulated in the queue while tooling was being built. Two (one CPython, one ansible) were individually read in full and judged directly. The remaining 11 were decided by policy, generalizing from the two individually-verified results plus the pydantic result from earlier in the session: all 4 remaining CPython C-internals tasks rejected, all 7 remaining Python-level tasks (pydantic ×2, ansible ×4, one already-checked ansible) approved, one pydantic task rejected specifically for Reviewer-stated hedge language. Every decision logged with a real reason via `HUMAN_APPROVAL_GRANTED`/`HUMAN_APPROVAL_REJECTED` audit events, `verify_audit.py`/`replay_audit.py` updated to recognize both as valid `WAITING_APPROVAL → COMPLETED/BLOCKED` transitions.
+  - **Pricing corrected**: both `worker.py` and `reviewer.py` were still costing calls at old Gemini 1.5 Flash rates ($0.000075/$0.000300 per 1k tokens). Updated to real, confirmed-current `gemini-3.5-flash-lite` pricing ($0.0003/$0.0025 per 1k tokens, i.e. $0.30/$2.50 per 1M), cross-checked against multiple independent pricing sources before applying.
+  - **All ~259 pre-fix tasks were left in place, not deleted** — consistent with this project's immutable-audit-log principle (`ARCHITECTURE.md`, and the Company History design in `blueprint.txt` — corrections get a new entry, not a silent edit/delete). They remain queryable and distinguishable via `json_extract(worker_result_json, '$.model')` (old = `gemini-1.5-flash` + `review_method` absent/heuristic; new = `gemini-3.5-flash-lite` + `review_method` present). Anyone computing aggregate metrics from `tasks` going forward must filter on this or risk averaging real and fake work together.
+
+  **Known gaps — deliberately left open, not yet closed:**
+  - **ansible's "trustworthy" verdict rests on thin evidence**: one task individually read in full and held up; four more approved by policy riding on that one result plus the separate pydantic pattern. Not yet at the same confidence level as the pydantic (2 individually read) or cpython (2 individually read, both failed) findings. Treat ansible as "promising, not fully proven" until at least one more individual read confirms or contradicts it.
+  - **The review gate is currently all-or-nothing per repo/domain**: every `llm_judged` pass across every repo waits for a human, even in domains already showing a strong reliable pattern (pydantic, ansible). This does not scale to genuine unattended autonomy — a human checking the queue is still required, just not per-task in real time (tasks wait indefinitely with no penalty, so this is not urgent, but it is a real limitation on the "autonomous" part of AgencyOS's mission). **Next planned step**: scope `require_human_review_for_llm_judged` per-repo instead of globally, so proven-reliable repos can auto-complete while CPython-style repos keep requiring review, tightening or loosening automatically as more calibration data comes in.
+  - **No mechanism verifies actual code correctness** (compiles, applies, passes its own proposed tests) anywhere in the pipeline yet — both the Worker and the Reviewer are judged/judging on plausibility of written text, not execution. This is the deeper, structural version of the C-internals gap above and would benefit both domains, not just the unreliable one. Not started; a real future task, likely larger in scope than anything done tonight (sandboxed checkout, patch application, test execution against the real repo).
 
 ## Hard-won lessons from this build (apply going forward)
 
@@ -339,7 +356,56 @@ decisions made in conversation that aren't written into those docs yet.
 
 ## Immediate next actions, in order
 
-1. **Phase 1 — Kernel Foundations: COMPLETE & VERIFIED ✅.** Signed off 2026-08-17.
-2. Once signed off: Phase 2 — First Real Business Unit (Software Agency) becomes the next task. Not started.
-3. **Optional, non-blocking**: opportunistically repeat the systemd kill test while a task is genuinely EXECUTING, to close the one caveat from the 2026-08-15 test. Not required before or during Phase 2 work.
+1. **Phase 1 — Kernel Foundations: COMPLETE & VERIFIED ✅.** Signed off
+   2026-08-17.
+2. **Per-repo human review gate tiering — real blocker before Phase 2
+   scales.** `require_human_review_for_llm_judged` is currently
+   global: every LLM-judged pass across every repo waits for a human,
+   even in domains already showing a reliable pattern (pydantic,
+   ansible). Phase 2 will multiply task volume across specialized
+   workers; without this, the review queue becomes an unmanageable
+   backlog rather than a targeted check. Scope the flag per-repo (or
+   per-domain) so proven-reliable repos can auto-complete while
+   CPython-style repos keep requiring review. Not started.
+3. **Documentation gap: `blueprint.txt` vision not linked from
+   `ROADMAP.md` — real confusion risk for future readers/IDE
+   sessions.** `blueprint.txt` describes a full Revenue Acquisition
+   department (multiple opportunity sources: bounty platforms,
+   freelance marketplaces, referrals, inbound via company
+   website/SEO — GitHub is explicitly only one of many) and
+   distinguishes two different "Marketing" concepts (Growth
+   Marketing — grows AgencyOS's own client pipeline, vs. a future
+   Marketing Business Unit — sells marketing work to clients).
+   `ROADMAP.md` currently gives no indication either of this exists;
+   someone reading only `ROADMAP.md` would assume GitHub search is
+   the entire opportunity-finding design. Add a short pointer in
+   `ROADMAP.md`'s "Explicitly Deferred" section directing readers to
+   `blueprint.txt` for the fuller picture, and note the Growth
+   Marketing / Marketing Business Unit distinction explicitly. Not
+   started.
+4. **AGENTS.md / SKILL.md for Worker accuracy — follow-up from
+   tonight's CPython findings.** The Worker has no grounding beyond
+   its own training data — this is a likely contributor to the
+   confirmed CPython C-internals failures (invented macros/functions
+   that don't exist). A domain-specific skill file (e.g. real,
+   verified CPython/ncurses API references) could reduce this failure
+   mode, though it would not eliminate it — this does not replace the
+   human review gate. Distinct from AGENTS.md (repo-level conventions)
+   and WORKFLOW.md (process sequencing) — naming and scope not yet
+   decided. Not started; lower priority than items 2–3.
+5. **Deferred, not urgent — noted so it isn't lost**: a real policy
+   decision is needed before adding any opportunity source beyond
+   GitHub's sanctioned API — specifically, whether/how AgencyOS is
+   allowed to interact with platforms using bot protection (e.g.
+   Cloudflare-protected sites). Default position discussed: prefer
+   platforms with a real, sanctioned API (same posture as GitHub);
+   treat scraping a bot-protected site as explicitly out of scope
+   without a specific, deliberate human decision. No source beyond
+   GitHub exists yet, so this is not currently blocking anything.
+6. Once items 2–3 above are done: Phase 2 — First Real Business Unit
+   (Software Agency) becomes the next task. Not started.
+7. **Optional, non-blocking**: opportunistically repeat the systemd
+   kill test while a task is genuinely EXECUTING, to close the one
+   caveat from the 2026-08-15 test. Not required before or during
+   Phase 2 work.
 
