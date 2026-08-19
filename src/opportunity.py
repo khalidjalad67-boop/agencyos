@@ -20,7 +20,7 @@ class OpportunityFetcher:
     SUPPORTED_REPOS = [
         "psf/requests",
         "scikit-learn/scikit-learn",
-        "python/cpython",
+        # "python/cpython",  # Disabled: C-internals hallucination / ungrounded API fabrication risk (see PROJECT_STATUS.md)
         "pydantic/pydantic",
         "ansible/ansible",
         "pandas-dev/pandas",
