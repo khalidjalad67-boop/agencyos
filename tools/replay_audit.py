@@ -52,6 +52,12 @@ def replay_audit_log(log_path: str) -> Tuple[Dict[str, Dict[str, Any]], float, D
                 if tid not in reconstructed_tasks: reconstructed_tasks[tid] = {}
                 reconstructed_tasks[tid]["state"] = "WORKER_FAILED"
                 reconstructed_tasks[tid]["error_reason"] = payload.get("error")
+            elif ev_type == "TESTER_REJECTED" and tid:
+                if tid not in reconstructed_tasks: reconstructed_tasks[tid] = {}
+                reconstructed_tasks[tid]["state"] = "QUALITY_REJECTED"
+                reconstructed_tasks[tid]["error_reason"] = f"TESTER_REJECTED: {payload.get('feedback')}"
+                w_cost = task_worker_costs.get(tid, 0.0)
+                reconstructed_spend += w_cost
             elif ev_type == "WORKER_EXECUTED" and tid:
                 if tid not in reconstructed_tasks: reconstructed_tasks[tid] = {}
                 reconstructed_tasks[tid]["state"] = "EXECUTING"

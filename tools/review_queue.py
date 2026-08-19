@@ -69,9 +69,24 @@ def list_queue(db: Optional[Database] = None, db_path: Optional[str] = None, con
     trusted = get_trusted_repos(config_path=config_path)
     trusted_str = ", ".join(trusted) if trusted else "none"
 
+    # Count Tester vs Reviewer rejections
+    tester_rejections = 0
+    reviewer_rejections = 0
+    try:
+        conn = sqlite3.connect(database.db_path)
+        cur = conn.cursor()
+        t_row = cur.execute("SELECT COUNT(*) FROM audit_log WHERE event_type='TESTER_REJECTED'").fetchone()
+        tester_rejections = t_row[0] if t_row else 0
+        r_row = cur.execute("SELECT COUNT(*) FROM tasks WHERE state='BLOCKED'").fetchone()
+        reviewer_rejections = r_row[0] if r_row else 0
+        conn.close()
+    except Exception:
+        pass
+
     resolved_path = database.db_path
     print(f"=== AgencyOS Human Review Queue ({len(llm_judged_tasks)} pending) ===")
     print(f"Trusted repos (auto-approve): {trusted_str}")
+    print(f"Rejections: Tester (TESTER_REJECTED): {tester_rejections} | Reviewer/Approval (BLOCKED): {reviewer_rejections}")
     if not llm_judged_tasks:
         print("No LLM-judged tasks pending in WAITING_APPROVAL queue.")
         return llm_judged_tasks

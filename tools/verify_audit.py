@@ -115,6 +115,7 @@ def verify_audit(db_path: str, log_path: str) -> Tuple[bool, List[str]]:
                 errors.append(f"{ev_type} event for task '{tid}' missing 'cost' in payload.")
         elif ev_type == "BUDGET_BLOCKED": implied_from_to = ("PLANNED", "BLOCKED")
         elif ev_type == "WORKER_FAILED": implied_from_to = ("EXECUTING", "WORKER_FAILED")
+        elif ev_type == "TESTER_REJECTED": implied_from_to = ("EXECUTING", "QUALITY_REJECTED")
         elif ev_type in ("TASK_BLOCKED", "HUMAN_APPROVAL_REJECTED"): implied_from_to = ("WAITING_APPROVAL", "BLOCKED")
 
         if implied_from_to:

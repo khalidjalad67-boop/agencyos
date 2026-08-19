@@ -6,6 +6,7 @@ from src.planner import Planner, TaskSpec
 from src.quality import OpportunityQualityScorer
 from src.budget_guard import BudgetGuard
 from src.worker import Worker, WorkerResult
+from src.tester import Tester, TesterResult
 from src.reviewer import Reviewer, ReviewResult
 from src.approval import ApprovalGate, ApprovalDecision
 from src.logger import AuditLogger
@@ -25,6 +26,7 @@ class AutonomousEngine:
         planner: Optional[Planner] = None,
         budget_guard: Optional[BudgetGuard] = None,
         worker: Optional[Worker] = None,
+        tester: Optional[Tester] = None,
         reviewer: Optional[Reviewer] = None,
         approval_gate: Optional[ApprovalGate] = None,
         watchdog: Optional[OperationalWatchdog] = None,
@@ -39,6 +41,7 @@ class AutonomousEngine:
         self.planner = planner or Planner()
         self.budget_guard = budget_guard or BudgetGuard(db=self.db, log_filepath=log_filepath)
         self.worker = worker or Worker()
+        self.tester = tester or Tester()
         self.reviewer = reviewer or Reviewer()
         self.approval_gate = approval_gate or ApprovalGate(db=self.db)
         self.watchdog = watchdog or OperationalWatchdog(db=self.db)
@@ -96,6 +99,10 @@ class AutonomousEngine:
                 )
                 return {"status": "QUALITY_REJECTED", "reason": qual_reason, "task_id": task_id}
 
+            # Manager: rule-based routing & domain tagging
+            trusted_list = getattr(self.approval_gate, "trusted_repos", [])
+            domain_trusted = bool(repo and repo in trusted_list)
+
             # Passed quality check -> transition to PLANNED
             task_spec = self.planner.plan(opp)
             task["task_spec"] = task_spec.to_dict()
@@ -106,7 +113,8 @@ class AutonomousEngine:
                     "task_id": task_id,
                     "opportunity_id": opp.id,
                     "task_spec": task_spec.to_dict(),
-                    "repo": repo
+                    "repo": repo,
+                    "domain_trusted": domain_trusted
                 })
             )
             state = "PLANNED"
@@ -202,6 +210,35 @@ class AutonomousEngine:
                         "repo": repo
                     })
                 )
+
+            # -----------------------------------------------------------------
+            # 3.5 DETERMINISTIC TESTER VERIFICATION (BEFORE Reviewer)
+            # -----------------------------------------------------------------
+            tester_result = self.tester.check(task_spec, worker_result)
+            if not tester_result.passed:
+                error_msg = f"TESTER_REJECTED: {tester_result.feedback}"
+                task["state"] = "QUALITY_REJECTED"
+                task["error_reason"] = error_msg
+                today_str = self.budget_guard.today_date_str
+                self.db.execute_atomic_transition(
+                    task,
+                    audit_event=("TESTER_REJECTED", {
+                        "task_id": task_id,
+                        "opportunity_id": opp.id,
+                        "unresolved_symbols": tester_result.unresolved_symbols,
+                        "checked_symbols": tester_result.checked_symbols,
+                        "feedback": tester_result.feedback,
+                        "repo": repo
+                    }),
+                    spend_record=(worker_result.actual_cost, today_str, "Worker spend (rejected by tester)")
+                )
+                self.budget_guard.cumulative_today_spend = self.db.get_today_spend(today_str)
+                return {
+                    "status": "QUALITY_REJECTED",
+                    "reason": tester_result.feedback,
+                    "task_id": task_id,
+                    "unresolved_symbols": tester_result.unresolved_symbols
+                }
 
             # -----------------------------------------------------------------
             # 4. REVIEWER EVALUATION with Idempotency Guard

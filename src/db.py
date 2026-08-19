@@ -65,6 +65,7 @@ LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
                             "WAITING_APPROVAL", # recovery: both caches found (recovery L34)
                             "READY",            # recovery: no cache — reset (recovery L64)
                             "WORKER_FAILED",    # worker returned FAILED status (L180)
+                            "QUALITY_REJECTED", # tester rejected ungrounded / fabricated symbols
                         },
 
     # Review block — REVIEW→REVIEW covers the resume path (recovery L50 -> engine L228)
