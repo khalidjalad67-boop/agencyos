@@ -10,6 +10,7 @@ paraphrased or reconstructed. Do not edit the fixture strings.
 - Fixture 1: task 4392810431, repo ansible/ansible (approved)
 - Fixture 2: task 5185208728, repo python/cpython, docs-only (approved)
 """
+import sys
 import unittest
 from src.tester import Tester
 from src.planner import TaskSpec
@@ -242,6 +243,7 @@ class TestTesterFalsePositiveCheck(unittest.TestCase):
     def setUp(self):
         self.tester = Tester()
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX xattr stdlib functions (os.listxattr) are Linux/POSIX-only and absent on Windows")
     def test_fixture_1_ansible_xattr_passes(self):
         """Real, approved ansible/ansible task 4392810431 must pass the Tester."""
         ts = TaskSpec(

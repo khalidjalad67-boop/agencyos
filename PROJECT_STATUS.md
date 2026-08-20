@@ -271,6 +271,70 @@ decisions made in conversation that aren't written into those docs yet.
   - **ansible's "trustworthy" verdict rests on thin evidence**: one task individually read in full and held up; four more approved by policy riding on that one result plus the separate pydantic pattern. Not yet at the same confidence level as the pydantic (2 individually read) or cpython (2 individually read, both failed) findings. Treat ansible as "promising, not fully proven" until at least one more individual read confirms or contradicts it.
   - **The review gate is currently all-or-nothing per repo/domain**: every `llm_judged` pass across every repo waits for a human, even in domains already showing a strong reliable pattern (pydantic, ansible). This does not scale to genuine unattended autonomy — a human checking the queue is still required, just not per-task in real time (tasks wait indefinitely with no penalty, so this is not urgent, but it is a real limitation on the "autonomous" part of AgencyOS's mission). **Next planned step**: scope `require_human_review_for_llm_judged` per-repo instead of globally, so proven-reliable repos can auto-complete while CPython-style repos keep requiring review, tightening or loosening automatically as more calibration data comes in.
   - **No mechanism verifies actual code correctness** (compiles, applies, passes its own proposed tests) anywhere in the pipeline yet — both the Worker and the Reviewer are judged/judging on plausibility of written text, not execution. This is the deeper, structural version of the C-internals gap above and would benefit both domains, not just the unreliable one. Not started; a real future task, likely larger in scope than anything done tonight (sandboxed checkout, patch application, test execution against the real repo).
+- **Phase 2 (partial) — Manager routing/tagging + deterministic Tester added; python/cpython removed from opportunity sources (2026-08-19/20).**
+  - **cpython removed from SUPPORTED_REPOS.** Confirmed via four independent real attempts across different models (Gemini, a stronger model, DeepSeek without search, DeepSeek with real web search results in hand) that CPython C-internals work reliably produces confident, plausible-looking but fabricated output — all four attempts on the same task (curses addstr attribute restoration, issue #155974) invented the identical non-existent Python method `curses.window.getattrs()` (a real ncurses C macro that was never exposed to Python). Search grounding did not fix this — DeepSeek's search-backed attempt found real, correct surrounding facts (real issue number, real related issue #133579) and still fabricated the same specific symbol. This is a structural gap (no verification against the real API), not a model-quality gap. `src/opportunity.py`'s `SUPPORTED_REPOS` now has `python/cpython` commented out, not deleted, with an inline note pointing back to this finding. Two genuinely good cpython results were also produced during calibration (a `math.tanpi` test-coverage task and a `tarfile.rst` documentation fix) — both were narrow, Python-level, non-C-internals work; removing the whole repo is a deliberate, acknowledged trade-off (give up occasional good low-level-adjacent results to reliably avoid confident fabrication) until a grounding/verification fix exists for C-internals work specifically.
+  - **Deterministic Tester added (`src/tester.py`), running after Worker, before Reviewer.** Built specifically to catch the `curses.getattrs()` class of failure mechanically and for free, since four independent LLM attempts (including one with real search) all missed it and the LLM Reviewer also missed it (scored the fabricated code 1.0 twice). Scans Worker output for Python attribute-access patterns on imported, real modules and checks existence via live `hasattr()` against the actual installed environment — deterministic, no model call, fails safe toward `passed=True` (inconclusive) when a symbol isn't cleanly checkable, so it only rejects on a confirmed, checkable fabrication.
+    - **Proof**: run directly against task `5174882301`'s real stored output (the confirmed `curses.getattrs()` fabrication) — correctly returned `passed=False`, correctly identified `getattrs` as the unresolved symbol while correctly resolving `attrset` (a real method) as valid. Not a blanket rejection — a genuine discriminating check.
+    - **False-positive check, and a real gap caught before deploy**: tested against two real, individually-human-approved Worker outputs from this session (ansible xattr fix, tarfile docs fix). Initial run (on Windows) incorrectly failed the ansible fixture — `os.listxattr`/`os.getxattr`/`os.setxattr` are genuine Python 3.3+ POSIX-only stdlib functions that don't exist on Windows, so `hasattr()` correctly returned `False` in that environment while the code is completely valid on the Linux VPS where AgencyOS actually runs. Re-run directly on the VPS (Linux): both fixtures passed cleanly. Confirmed as a test-environment artifact, not a logic bug in the Tester — but a real lesson: verify tools like this against the actual deployment platform, not a convenient dev machine. A generalizable robustness improvement (skip flagging symbols already guarded by an explicit `hasattr()` check in the same code block, regardless of platform) was scoped but deliberately deferred as non-urgent, since the platform-specific false positive doesn't reproduce in production.
+    - **On rejection**: task transitions `EXECUTING → QUALITY_REJECTED` (reusing the existing terminal state from Phase 0.6's pre-planning quality gate — verified these are two non-conflicting entry points into the same terminal state, not a blurred/overloaded one), logs `TESTER_REJECTED` with the unresolved symbols, and — importantly — the Worker's real spend is still recorded (the LLM call genuinely happened and cost money); only the Reviewer call is skipped, correctly saving that cost. `verify_audit.py`/`replay_audit.py` updated to recognize `TESTER_REJECTED` as a valid transition.
+  - **Manager (rule-based routing/tagging) added, running before the Worker.** Checks a task's repo against the existing `trusted_repos` list (reused, not duplicated) and tags `domain_trusted: true/false` directly into the existing `TASK_PLANNED` audit event. Currently informational only — does not block or alter execution for untrusted repos, which still go through the full Worker→Tester→Reviewer→human-approval pipeline unchanged. This is deliberately the smallest possible "Manager," per the Governing Rule — no second worker, no role specialization, since there is no evidence yet that one worker can't handle the current trusted-domain scope. This groundwork exists specifically to make future Executive Layer reasoning (see `FUTURE-EXECUTIVE-REVIEW-3.md`) work from real, categorized data rather than guesses, once enough of it accumulates.
+  - **`tools/review_queue.py` extended** to show a Tester-vs-Reviewer rejection count breakdown in its list output, so this distinction is visible without a manual SQL query.
+  - **Backlog cleared same session, real individual judgment applied**: of 21 total tasks in the queue across two batches, all cpython-repo tasks were rejected by policy (repo now excluded; consistent with the confirmed pattern), Python-level tasks from proven domains were approved, and one task (psf/requests #6294, zero-byte-file chunked-encoding fix) was individually read and rejected for a real design flaw that neither the Tester nor the Reviewer caught: the proposed fix only handled seekable empty file-like objects (not the general zero-length-body/stream/generator case the real issue describes), and introduced an unguarded `seek()`/`tell()` side effect on the caller's file object with a silently-swallowed `IOError` that reverts to the old broken behavior with no signal. This is a genuinely important, distinct finding: no fabricated symbols were present (Tester correctly had nothing to flag), and the Reviewer scored it 1.0 — this class of problem (real, valid code that is nonetheless too narrow or has a risky side effect) is precisely what neither automated layer is built to catch, and exactly the role a human is still needed for even after Tester and Reviewer both exist.
+
+  **Known gaps, updated:**
+  - **Neither the Tester nor the Reviewer catches "narrow/incomplete fix" or "risky side-effect" classes of problems** — only outright symbol fabrication (Tester) and gross implausibility (Reviewer). Confirmed by the psf/requests #6294 case above. This is not a bug to fix urgently — it's the honest current boundary of automated review, and the reason the human approval gate is not being loosened yet.
+  - **The `hasattr()`-guard robustness improvement to `src/tester.py`** (skip flagging symbols the Worker already defensively checks) is scoped but not implemented — low priority, since the one known case it would fix (Windows/POSIX platform mismatch) doesn't occur on the actual Linux production environment.
+  - **Tester and Manager are deployed and individually verified but not yet confirmed against genuinely new, organically-discovered live traffic** — all verification so far has been against stored/replayed task data or synthetic fixtures. Not a concern, just not yet observed; will confirm naturally as new opportunities are discovered.
+
+  > **First real calibration data on pandas-dev/pandas, and a sharper
+  > general finding (2026-08-20).** Four genuinely new, organically
+  > discovered tasks from pandas-dev/pandas were individually read (not
+  > decided by policy, since this repo had zero prior calibration data).
+  > Result: 2 approved, 2 rejected.
+  >
+  > Approved: exposing existing internal classes (`DatetimeIndexResampler`,
+  > `PeriodIndexResampler`, `TimedeltaIndexResampler`) under a public
+  > typing namespace -- a narrow, mechanical "make already-correct code
+  > importable" change; and a type-stub widening fix for
+  > `DataFrame.eq()` to accept scalar strings -- narrow, honestly scoped
+  > ("this is a type-checking bug fix," no runtime behavior claims made
+  > beyond what's true).
+  >
+  > Rejected: a PyArrow-backed float NaN/null coercion fix, self-labeled
+  > "conceptual patch" with an explicit "Note: In the actual codebase,
+  > this integration is tied into..." admission -- same hedge-language
+  > pattern that predicted every confirmed fabrication this project has
+  > found; and a `factorize(use_na_sentinel=False)` fix whose actual core
+  > logic was a bare `pass  # (Implementation assigns new index for
+  > nulls)` -- the fix describes what should happen in a comment instead
+  > of implementing it, functionally identical to "conceptual patch"
+  > hedging but using no literal hedge phrase, so it was NOT caught by
+  > the automated hedge-language detector. Its accompanying test was
+  > correspondingly weak: it only asserted `-1 not in codes_false`,
+  > never verifying the specific correct value the analysis itself
+  > claimed was right.
+  >
+  > **Sharper general finding, worth treating as more useful than
+  > repo-level trust alone**: across every domain checked so far
+  > (pydantic, ansible, cpython, psf/requests, pandas), the real
+  > predictor of a trustworthy fix is not primarily which repo it's in --
+  > it's whether the change is **narrow and mechanical** (expose an
+  > existing symbol, tighten a type stub, add test coverage for
+  > documented behavior) versus **broad and architectural**, requiring
+  > the model to guess at unfamiliar internals it hasn't actually
+  > verified. Repo-level trust (pydantic/ansible in `trusted_repos`)
+  > remains a reasonable coarse proxy for this, but this narrower axis
+  > is the more accurate underlying signal and should inform SOP design
+  > when that work starts (Immediate next action #2).
+  >
+  > **Confirmed gap in `tools/review_queue.py`'s `HEDGE_PHRASES` list**:
+  > it only matches literal phrases ("conceptual patch", "the actual
+  > implementation", etc.). A bare `pass` (or equivalent no-op)
+  > standing in for real logic, with a comment describing intended
+  > behavior instead of implementing it, is the same underlying failure
+  > mode and is currently invisible to the detector. Scoped as a small,
+  > evidence-based follow-up (see Immediate next actions), not yet
+  > implemented.
 
 ## Hard-won lessons from this build (apply going forward)
 
@@ -358,16 +422,20 @@ decisions made in conversation that aren't written into those docs yet.
 
 1. **Phase 1 — Kernel Foundations: COMPLETE & VERIFIED ✅.** Signed off
    2026-08-17.
-2. **Per-repo human review gate tiering — real blocker before Phase 2
-   scales.** `require_human_review_for_llm_judged` is currently
-   global: every LLM-judged pass across every repo waits for a human,
-   even in domains already showing a reliable pattern (pydantic,
-   ansible). Phase 2 will multiply task volume across specialized
-   workers; without this, the review queue becomes an unmanageable
-   backlog rather than a targeted check. Scope the flag per-repo (or
-   per-domain) so proven-reliable repos can auto-complete while
-   CPython-style repos keep requiring review. Not started.
-3. **Documentation gap: `blueprint.txt` vision not linked from
+2. **Extend hedge-language detection to catch stubbed-out `pass`
+   placeholders**, not just literal hedge phrases. Small, bounded fix
+   to `tools/review_queue.py`'s `detect_hedge_language()` (or a
+   sibling check) -- likely: flag a `pass` statement immediately
+   preceded by a comment describing what the code should do, inside a
+   proposed code block. Two real confirmed examples exist to validate
+   against once built (see the pandas factorize finding above).
+3. **Per-repo human review gate tiering — COMPLETE, deployed
+   2026-08-19/20.** `trusted_repos` in config/settings.yaml, wired
+   into src/approval.py's request_approval(). Confirmed live in
+   production: pydantic/pydantic and ansible/ansible tasks correctly
+   auto-complete without entering the review queue, while all other
+   repos still require human review. No longer a blocker.
+4. **Documentation gap: `blueprint.txt` vision not linked from
    `ROADMAP.md` — real confusion risk for future readers/IDE
    sessions.** `blueprint.txt` describes a full Revenue Acquisition
    department (multiple opportunity sources: bounty platforms,
@@ -383,7 +451,7 @@ decisions made in conversation that aren't written into those docs yet.
    `blueprint.txt` for the fuller picture, and note the Growth
    Marketing / Marketing Business Unit distinction explicitly. Not
    started.
-4. **AGENTS.md / SKILL.md for Worker accuracy — follow-up from
+5. **AGENTS.md / SKILL.md for Worker accuracy — follow-up from
    tonight's CPython findings.** The Worker has no grounding beyond
    its own training data — this is a likely contributor to the
    confirmed CPython C-internals failures (invented macros/functions
@@ -393,7 +461,7 @@ decisions made in conversation that aren't written into those docs yet.
    human review gate. Distinct from AGENTS.md (repo-level conventions)
    and WORKFLOW.md (process sequencing) — naming and scope not yet
    decided. Not started; lower priority than items 2–3.
-5. **Deferred, not urgent — noted so it isn't lost**: a real policy
+6. **Deferred, not urgent — noted so it isn't lost**: a real policy
    decision is needed before adding any opportunity source beyond
    GitHub's sanctioned API — specifically, whether/how AgencyOS is
    allowed to interact with platforms using bot protection (e.g.
@@ -402,9 +470,10 @@ decisions made in conversation that aren't written into those docs yet.
    treat scraping a bot-protected site as explicitly out of scope
    without a specific, deliberate human decision. No source beyond
    GitHub exists yet, so this is not currently blocking anything.
-6. Once items 2–3 above are done: Phase 2 — First Real Business Unit
-   (Software Agency) becomes the next task. Not started.
-7. **Optional, non-blocking**: opportunistically repeat the systemd
+7. Once item 4 above is done: Phase 2 — First Real Business Unit
+   (Software Agency) becomes the next task. (Item 3 is complete; item 4
+   -- the blueprint.txt/ROADMAP.md documentation gap -- remains open.)
+8. **Optional, non-blocking**: opportunistically repeat the systemd
    kill test while a task is genuinely EXECUTING, to close the one
    caveat from the 2026-08-15 test. Not required before or during
    Phase 2 work.

@@ -13,8 +13,10 @@ import sys
 import os
 import time
 import json
+import sqlite3
+import re
 import argparse
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 from src.db import Database, resolve_db_path
 from src.worker import WorkerResult
@@ -35,12 +37,66 @@ HEDGE_PHRASES: List[str] = [
     "approach would be",
 ]
 
+STUB_ACTION_KEYWORDS: Set[str] = {
+    "should", "would", "assigns", "assign", "handle", "handles",
+    "implement", "implements", "implementation", "todo", "fixme",
+    "logic", "calculate", "update", "set", "process", "add", "populate",
+}
+
 def detect_hedge_language(text: str) -> List[str]:
     """Scans text for known hedge / placeholder phrases (case-insensitive)."""
     if not text:
         return []
     text_lower = text.lower()
     return [phrase for phrase in HEDGE_PHRASES if phrase in text_lower]
+
+def detect_stub_placeholder(text: str) -> List[str]:
+    """Scans Python code blocks for bare 'pass' statements where implementation logic is described in comments instead of written."""
+    if not text:
+        return []
+
+    matches: List[str] = []
+
+    # Extract code blocks
+    pattern = r"```(?:python|py)?\s*\n(.*?)```"
+    blocks = re.findall(pattern, text, flags=re.DOTALL | re.IGNORECASE)
+    if not blocks:
+        blocks = [text]
+
+    for block in blocks:
+        lines = block.splitlines()
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # Match bare pass with optional inline comment
+            if re.match(r"^pass(?:\s+#.*)?$", stripped):
+                inline_match = None
+                # Check (b) inline comment starting with implementation/todo/etc.
+                if "#" in stripped:
+                    comment_part = stripped[stripped.index("#"):]
+                    if re.search(r"#\s*(?:\(?[iI]mplementation|TODO|todo|implement|assigns|should|would|handle|logic)\b", comment_part, re.I):
+                        inline_match = f"bare 'pass' with description comment: '{comment_part.strip()}'"
+
+                # Check (a) immediately preceding comment lines
+                prev_comments = []
+                j = i - 1
+                while j >= 0 and lines[j].strip().startswith("#"):
+                    prev_comments.insert(0, lines[j].strip())
+                    j -= 1
+
+                prec_match = None
+                if prev_comments:
+                    combined_comment = " ".join(prev_comments)
+                    words = set(re.findall(r"[a-zA-Z]+", combined_comment.lower()))
+                    if words & STUB_ACTION_KEYWORDS:
+                        snippet = prev_comments[0] if len(prev_comments) == 1 else f"{prev_comments[0]} ... {prev_comments[-1]}"
+                        prec_match = f"bare 'pass' with description comment: '{snippet}'"
+
+                if inline_match:
+                    matches.append(inline_match)
+                elif prec_match:
+                    matches.append(prec_match)
+
+    return matches
 
 def get_trusted_repos(config_path: str = "config/settings.yaml") -> List[str]:
     """Reads trusted repos from config/settings.yaml."""
@@ -103,6 +159,7 @@ def list_queue(db: Optional[Database] = None, db_path: Optional[str] = None, con
         wres = t.get("worker_result") or {}
         worker_output = wres.get("output", "") if isinstance(wres, dict) else ""
         hedge_phrases = detect_hedge_language(worker_output)
+        stub_placeholders = detect_stub_placeholder(worker_output)
 
         print(f"\n[{idx}] Task ID : {task_id}")
         print(f"    Repo    : {repo}")
@@ -112,6 +169,9 @@ def list_queue(db: Optional[Database] = None, db_path: Optional[str] = None, con
         if hedge_phrases:
             formatted_phrases = ", ".join(f"'{p}'" for p in hedge_phrases)
             print(f"    [WARNING] HEDGE LANGUAGE DETECTED: {formatted_phrases}")
+        if stub_placeholders:
+            formatted_stubs = "; ".join(stub_placeholders)
+            print(f"    [WARNING] STUB PLACEHOLDER DETECTED: {formatted_stubs}")
         print(f"    Inspect : sqlite3 {resolved_path} \"SELECT worker_result_json FROM tasks WHERE task_id='{task_id}';\"")
     
     print("\n" + "=" * 55)
@@ -143,6 +203,7 @@ def explain_task(task_id: str, db: Optional[Database] = None, db_path: Optional[
     review_method = review_result.get("review_method", "heuristic_fallback" if "score" in review_result else "unknown")
 
     hedge_phrases = detect_hedge_language(worker_output)
+    stub_placeholders = detect_stub_placeholder(worker_output)
 
     print("=" * 70)
     print(f"AGENCYOS TASK REVIEW EXPLANATION: {task_id}")
@@ -173,6 +234,14 @@ def explain_task(task_id: str, db: Optional[Database] = None, db_path: Optional[
         print("Note: The proposal may contain conceptual placeholders or non-executable pseudocode.")
     else:
         print("None detected (No hedge / placeholder phrases found in worker output).")
+
+    print("\n--- STUB PLACEHOLDER DETECTION ---")
+    if stub_placeholders:
+        formatted_stubs = "; ".join(stub_placeholders)
+        print(f"[WARNING] Stub placeholder detected ({len(stub_placeholders)} matches): {formatted_stubs}")
+        print("Note: The proposal contains bare 'pass' statements where implementation logic was described in comments instead of written.")
+    else:
+        print("None detected (No descriptive 'pass' placeholders found in worker output).")
 
     print("\n" + "=" * 70)
     return True

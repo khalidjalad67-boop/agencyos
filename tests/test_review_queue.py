@@ -13,7 +13,14 @@ from src.worker import Worker, WorkerResult
 from src.reviewer import Reviewer, ReviewResult
 from src.approval import ApprovalGate
 from src.logger import AuditLogger
-from tools.review_queue import list_queue, approve_task, reject_task
+from tools.review_queue import (
+    list_queue,
+    explain_task,
+    approve_task,
+    reject_task,
+    detect_hedge_language,
+    detect_stub_placeholder
+)
 from tools.verify_audit import verify_audit
 from tools.replay_audit import verify_replay
 
@@ -432,6 +439,122 @@ class TestReviewQueue(unittest.TestCase):
             list_queue(db=self.db)
         output = f.getvalue()
         self.assertIn("Trusted repos (auto-approve): pydantic/pydantic, ansible/ansible", output)
+
+    def test_detect_stub_placeholder_flags_pandas_factorize_fixture(self):
+        """Confirm detect_stub_placeholder detects the real pandas factorize bare pass with description comment."""
+        pandas_fixture = (
+            "### Code Fix\n"
+            "```python\n"
+            "    if not use_na_sentinel:\n"
+            "        mask = indices == -1\n"
+            "        if mask.any():\n"
+            "            # Add a NaN/Null sentinel category to the dictionary values\n"
+            "            # or handle the index mapping so nulls get len(dictionary).\n"
+            "            pass # (Implementation assigns new index for nulls)\n"
+            "```"
+        )
+        stubs = detect_stub_placeholder(pandas_fixture)
+        self.assertTrue(len(stubs) >= 1)
+        self.assertTrue(any("pass" in s for s in stubs))
+        self.assertTrue(any("Implementation assigns new index" in s or "Add a NaN" in s for s in stubs))
+
+    def test_detect_stub_placeholder_preceding_comment_only(self):
+        """Confirm detect_stub_placeholder detects a pass preceded by a comment describing intended behavior."""
+        code_snippet = (
+            "```python\n"
+            "def handle_null_values(series):\n"
+            "    # We should assign a default index to missing items\n"
+            "    pass\n"
+            "```"
+        )
+        stubs = detect_stub_placeholder(code_snippet)
+        self.assertEqual(len(stubs), 1)
+        self.assertIn("should assign", stubs[0])
+
+    def test_detect_stub_placeholder_complete_code_passes(self):
+        """Confirm genuinely complete code without pass or hedging returns empty list."""
+        complete_code = (
+            "```python\n"
+            "def factorize_fast(values):\n"
+            "    uniques, codes = np.unique(values, return_inverse=True)\n"
+            "    return codes, uniques\n"
+            "```"
+        )
+        stubs = detect_stub_placeholder(complete_code)
+        self.assertEqual(stubs, [])
+
+    def test_detect_stub_placeholder_legitimate_empty_stub_passes(self):
+        """Confirm legitimate empty function stub without intent comment does not get flagged."""
+        abstract_code = (
+            "```python\n"
+            "class BaseResampler:\n"
+            "    def resample(self):\n"
+            "        pass\n\n"
+            "    def aggregate(self, func):\n"
+            "        pass\n"
+            "```"
+        )
+        stubs = detect_stub_placeholder(abstract_code)
+        self.assertEqual(stubs, [])
+
+    def test_list_queue_and_explain_displays_stub_warning(self):
+        """Confirm list_queue and explain_task output stub placeholder warnings when task has stubbed pass."""
+        import io
+        from contextlib import redirect_stdout
+
+        class MockStubWorker:
+            def execute(self, task_spec):
+                return WorkerResult(
+                    opportunity_id=task_spec.opportunity_id,
+                    output=(
+                        "```python\n"
+                        "    if not use_na_sentinel:\n"
+                        "        # Handle index mapping\n"
+                        "        pass # (Implementation assigns new index for nulls)\n"
+                        "```"
+                    ),
+                    execution_time_sec=0.05,
+                    actual_cost=0.0001,
+                    prompt_tokens=100,
+                    completion_tokens=200,
+                    model="gemini-3.5-flash-lite"
+                )
+
+        engine = AutonomousEngine(
+            db=self.db,
+            quality_scorer=OpportunityQualityScorer(),
+            planner=Planner(),
+            budget_guard=BudgetGuard(db=self.db, log_filepath=self.log_path),
+            worker=MockStubWorker(),
+            reviewer=MockLLMReviewer(passed=True, score=0.95, review_method="llm_judged"),
+            approval_gate=self.approval_gate,
+            logger=self.logger,
+            log_filepath=self.log_path
+        )
+        opp = Opportunity(
+            id="opp_stub_test",
+            title="Pandas factorize null fix",
+            description="Fix factorize handling for use_na_sentinel=False.",
+            source="github",
+            payload={"repo": "pandas-dev/pandas", "issue_number": 5555}
+        )
+        task_id = self._seed_task(opp)
+        engine.process_task(task_id)
+
+        # 1. Test list_queue output
+        f_list = io.StringIO()
+        with redirect_stdout(f_list):
+            list_queue(db=self.db)
+        list_output = f_list.getvalue()
+        self.assertIn("[WARNING] STUB PLACEHOLDER DETECTED", list_output)
+
+        # 2. Test explain_task output
+        f_explain = io.StringIO()
+        with redirect_stdout(f_explain):
+            explain_task(task_id, db=self.db)
+        explain_output = f_explain.getvalue()
+        self.assertIn("--- STUB PLACEHOLDER DETECTION ---", explain_output)
+        self.assertIn("[WARNING] Stub placeholder detected", explain_output)
 
 if __name__ == "__main__":
     unittest.main()
