@@ -26,14 +26,59 @@ class WorkerResult:
 class Worker:
     """Executes task via real network HTTP API requests, featuring exponential backoff retries and crash isolation."""
     
-    def __init__(self, model_name: str = "gemini-1.5-flash", max_retries: int = 3):
+    def __init__(self, model_name: str = "gemini-1.5-flash", max_retries: int = 3, template_path: str = "sops/worker_v1.md"):
         self.model_name = model_name
         self.max_retries = max_retries
         self.total_retries = 0
+        self.template_path = template_path
+        self.prompt_template = self._load_template(template_path)
         self.api_key = (
             os.environ.get("GEMINI_API_KEY") or
             os.environ.get("GOOGLE_API_KEY") or
             os.environ.get("OPENAI_API_KEY")
+        )
+
+    def _load_template(self, template_path: str) -> str:
+        """Loads prompt template from disk, stripping leading comment headers."""
+        candidates = [
+            template_path,
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), template_path),
+        ]
+        resolved = None
+        for path in candidates:
+            if os.path.exists(path):
+                resolved = path
+                break
+
+        if not resolved:
+            error_msg = f"Worker prompt template not found at '{template_path}' (checked {candidates})"
+            print(f"  [ERROR] {error_msg}")
+            raise FileNotFoundError(error_msg)
+
+        try:
+            with open(resolved, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            error_msg = f"Failed to read worker prompt template at '{resolved}': {e}"
+            print(f"  [ERROR] {error_msg}")
+            raise RuntimeError(error_msg) from e
+
+        # Strip leading comments (HTML comment <!-- ... --> or markdown # comments)
+        import re
+        cleaned = re.sub(r"^\s*<!--.*?-->\s*", "", content, flags=re.DOTALL)
+        if cleaned.startswith("#"):
+            lines = cleaned.splitlines()
+            while lines and (lines[0].strip().startswith("#") or not lines[0].strip()):
+                lines.pop(0)
+            cleaned = "\n".join(lines)
+        return cleaned.strip()
+
+    def format_prompt(self, task_spec: TaskSpec) -> str:
+        """Formats the prompt by substituting {{task}} and {{expected_output}} into the template."""
+        return (
+            self.prompt_template
+            .replace("{{task}}", task_spec.task)
+            .replace("{{expected_output}}", task_spec.expected_output)
         )
 
     def execute(self, task_spec: TaskSpec) -> WorkerResult:
@@ -147,8 +192,9 @@ class Worker:
 
     def _execute_gemini_http(self, task_spec: TaskSpec, start_time: float) -> WorkerResult:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
+        prompt_text = self.format_prompt(task_spec)
         payload = json.dumps({
-            "contents": [{"parts": [{"text": f"{task_spec.task}\nExpected Output: {task_spec.expected_output}"}]}]
+            "contents": [{"parts": [{"text": prompt_text}]}]
         }).encode("utf-8")
         req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
         
@@ -182,11 +228,12 @@ class Worker:
 
     def _execute_openai_http(self, task_spec: TaskSpec, start_time: float) -> WorkerResult:
         url = "https://api.openai.com/v1/chat/completions"
+        prompt_text = self.format_prompt(task_spec)
         payload = json.dumps({
             "model": "gpt-4o-mini",
             "messages": [
                 {"role": "system", "content": "You are a software engineering worker."},
-                {"role": "user", "content": f"{task_spec.task}\nExpected Output: {task_spec.expected_output}"}
+                {"role": "user", "content": prompt_text}
             ]
         }).encode("utf-8")
         req = urllib.request.Request(url, data=payload, headers={
