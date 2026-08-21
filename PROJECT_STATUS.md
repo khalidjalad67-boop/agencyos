@@ -335,6 +335,85 @@ decisions made in conversation that aren't written into those docs yet.
   > mode and is currently invisible to the detector. Scoped as a small,
   > evidence-based follow-up (see Immediate next actions), not yet
   > implemented.
+  >
+  > **SOPs (versioned prompt template) and KPIs added — Phase 2's
+  > Definition of Done now satisfied (2026-08-21).**
+  >
+  > **SOPs**: The Worker's LLM prompt, previously a hardcoded string
+  > inside src/worker.py, was extracted verbatim (zero wording change)
+  > into sops/worker_v1.md. Worker now loads and caches this template at
+  > init time, substituting {{task}}/{{expected_output}} placeholders.
+  > Verified byte-for-byte equivalence against the previous hardcoded
+  > output via a dedicated test before deployment. Fails loud (raises,
+  > does not silently fall back) if the template file is missing.
+  > Deliberately a single template, not per-domain variants -- no
+  > evidence yet that different domains need different wording; the
+  > two-callers rule applies here same as everywhere else in this
+  > project. A real merge conflict occurred deploying this (VPS-side
+  > `per_repo_target`/model-name edits collided with the new
+  > `template_path` parameter on the same `__init__` line) -- resolved
+  > manually on the VPS, verified via full test suite (128 tests passing)
+  > and independent byte-for-byte reconstruction before trusting the
+  > repair, then committed directly on the VPS (a deliberate, documented
+  > exception to the usual "Windows is source of truth" flow, justified
+  > because the conflict originated and had to be resolved there).
+  >
+  > **KPIs**: New `python3 -m tools.review_queue kpis` command, reusing
+  > the existing `Database.get_telemetry_metrics()` rather than
+  > reimplementing telemetry math. Reports: overall lifecycle/cost
+  > stats, a per-repository breakdown with trust status, a
+  > pipeline-source breakdown (Tester vs. human vs. trusted-auto vs.
+  > heuristic-fallback rejections/approvals), and a **detector signal
+  > quality check** -- retroactively re-running `detect_hedge_language()`
+  > and `detect_stub_placeholder()` against every stored task to compute
+  > real approve/reject rates for flagged vs. clean tasks.
+  >
+  > **First real run against production data produced an immediately
+  > useful, non-obvious finding**: tasks carrying a hedge-language or
+  > stub-placeholder warning were rejected at a **78.6% combined rate**,
+  > versus **8.7%** for clean tasks -- roughly a 9x difference. This is
+  > the first aggregate, cross-task confirmation that these two
+  > deterministic detectors (built from individual case-by-case findings
+  > earlier this session) are genuinely predictive signals, not
+  > anecdotal pattern-matching. Worth treating as a real, load-bearing
+  > part of the review workflow going forward, not just a nice-to-have.
+  >
+  > **The same real run also retroactively validated the cpython
+  > removal decision with hard numbers**, independent of the earlier
+  > four-model curses experiment: `python/cpython` had both the largest
+  > task volume of any repo (133, nearly double the next-largest) and
+  > the lowest approval rate (81.8%) of any repo in the database.
+  >
+  > **Important caveat for interpreting these numbers**: 260 of 277
+  > total completions (94%) came via "Heuristic Fallback
+  > Auto-Approvals" -- the pre-fix code path, from before this session's
+  > real Worker/Reviewer existed. The numbers that actually reflect the
+  > current, real pipeline are much smaller: 12 human-granted approvals
+  > + 5 trusted-repo auto-approvals + 26 human rejections = 43 tasks.
+  > Any future reader computing headline stats from this database should
+  > filter on `review_method` (llm_judged vs. heuristic_fallback, per the
+  > earlier finding in this file) rather than trusting aggregate totals
+  > at face value.
+  >
+  > **`Tester (TESTER_REJECTED): 0` remains true even against this full
+  > real dataset.** Not a concern -- the hedge/stub detectors appear to
+  > be catching the "vague/incomplete" failure mode more often than the
+  > Tester's specific "confidently fabricated symbol with no hedging"
+  > failure mode occurs in practice. A genuinely interesting distinction
+  > between failure types, not evidence the Tester isn't working (it
+  > remains individually proven correct against the real curses
+  > fabrication case).
+  >
+  > **Phase 2's Definition of Done (ROADMAP.md: Manager, workers, SOPs,
+  > KPIs, "could run as a standalone product on its own") is now
+  > satisfied**, with one documented, deliberate deviation: 1 worker,
+  > not 2-3. This was a considered decision, not a skipped step --
+  > tonight's evidence consistently pointed to task narrowness (narrow/
+  > mechanical vs. broad/architectural) as the real predictor of
+  > reliability, not task-phase role specialization (Researcher/Coder/
+  > Tester-style splits), so investment went into the Tester + detectors
+  > + SOP groundwork instead of a second generic worker with no
+  > demonstrated need.
 
 ## Hard-won lessons from this build (apply going forward)
 
@@ -423,12 +502,11 @@ decisions made in conversation that aren't written into those docs yet.
 1. **Phase 1 — Kernel Foundations: COMPLETE & VERIFIED ✅.** Signed off
    2026-08-17.
 2. **Extend hedge-language detection to catch stubbed-out `pass`
-   placeholders**, not just literal hedge phrases. Small, bounded fix
-   to `tools/review_queue.py`'s `detect_hedge_language()` (or a
-   sibling check) -- likely: flag a `pass` statement immediately
-   preceded by a comment describing what the code should do, inside a
-   proposed code block. Two real confirmed examples exist to validate
-   against once built (see the pandas factorize finding above).
+   placeholders — COMPLETE, deployed 2026-08-20/21.** Built
+   `detect_stub_placeholder()` in `tools/review_queue.py` with
+   targeted keyword/comment heuristics, wired into `list_queue()`,
+   `explain_task()`, and `kpis_report()`. Validated against real
+   pandas factorize fixture and confirmed 0 regressions.
 3. **Per-repo human review gate tiering — COMPLETE, deployed
    2026-08-19/20.** `trusted_repos` in config/settings.yaml, wired
    into src/approval.py's request_approval(). Confirmed live in
@@ -477,4 +555,9 @@ decisions made in conversation that aren't written into those docs yet.
    kill test while a task is genuinely EXECUTING, to close the one
    caveat from the 2026-08-15 test. Not required before or during
    Phase 2 work.
+9. **Phase 2 — First Real Business Unit (Software Agency): COMPLETE
+   & VERIFIED ✅.** Signed off 2026-08-21. All Definition of Done
+   criteria (Manager, Worker, SOPs, KPIs, review gate, deterministic
+   Tester, detector signals) verified in production with real evidence
+   -- see the Phase 2 entries above for the full trail.
 

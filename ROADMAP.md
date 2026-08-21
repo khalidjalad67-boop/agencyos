@@ -440,7 +440,7 @@ Only build what Phase 0/0.5 is genuinely straining against:
 
 ---
 
-## Phase 2 — First Real Business Unit
+## Phase 2 — First Real Business Unit [COMPLETE ✅]
 
 Pick one unit (Software Agency) and build it properly:
 - Manager (routes tasks to the right worker)
@@ -450,8 +450,19 @@ Pick one unit (Software Agency) and build it properly:
 
 Do not build other units yet.
 
+**Implementation note**: built as 1 well-specialized worker rather
+than 2-3, per real evidence gathered during implementation --
+task narrowness (mechanical/scoped vs. broad/architectural) proved to
+be the dominant predictor of reliability, not pipeline-stage role
+specialization. See PROJECT_STATUS.md's Phase 2 entries for the full
+evidence trail (calibration data across 5+ repos, the KPIs detector-
+signal-quality finding, the cpython removal rationale). Manager
+implemented as rule-based domain tagging; SOPs implemented as a
+single versioned prompt template (sops/worker_v1.md); KPIs implemented
+as `tools/review_queue.py kpis`.
+
 **Definition of Done:**
-- [ ] This unit could run as a standalone product on its own
+- [x] This unit could run as a standalone product on its own
 
 ---
 
