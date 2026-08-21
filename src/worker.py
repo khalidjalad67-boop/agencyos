@@ -25,6 +25,7 @@ class WorkerResult:
 
 class Worker:
     """Executes task via real network HTTP API requests, featuring exponential backoff retries and crash isolation."""
+    
     def __init__(self, model_name: str = "gemini-3.5-flash-lite", max_retries: int = 3, template_path: str = "sops/worker_v1.md"):
         self.model_name = model_name
         self.max_retries = max_retries
