@@ -19,7 +19,8 @@ from tools.review_queue import (
     approve_task,
     reject_task,
     detect_hedge_language,
-    detect_stub_placeholder
+    detect_stub_placeholder,
+    kpis_report
 )
 from tools.verify_audit import verify_audit
 from tools.replay_audit import verify_replay
@@ -555,6 +556,169 @@ class TestReviewQueue(unittest.TestCase):
         explain_output = f_explain.getvalue()
         self.assertIn("--- STUB PLACEHOLDER DETECTION ---", explain_output)
         self.assertIn("[WARNING] Stub placeholder detected", explain_output)
+
+    def test_kpis_report_overall_and_per_repo(self):
+        """Confirm kpis_report computes overall lifecycle telemetry and per-repo statistics matching seeded data."""
+        now = time.time()
+        # Seed 2 completed pydantic tasks (trusted)
+        for i in range(2):
+            self.db.execute_atomic_transition({
+                "task_id": f"kpi_pyd_{i}",
+                "opportunity_id": f"kpi_pyd_{i}",
+                "state": "COMPLETED",
+                "repo": "pydantic/pydantic",
+                "title": f"Pydantic task {i}",
+                "worker_result": {"actual_cost": 0.001},
+                "review_result": {"review_cost": 0.0005},
+                "created_at": now,
+                "updated_at": now
+            }, spend_record=(0.0015, "2026-08-21", f"pydantic {i}"))
+
+        # Seed 1 completed ansible task (trusted)
+        self.db.execute_atomic_transition({
+            "task_id": "kpi_ans_0",
+            "opportunity_id": "kpi_ans_0",
+            "state": "COMPLETED",
+            "repo": "ansible/ansible",
+            "title": "Ansible task 0",
+            "worker_result": {"actual_cost": 0.002},
+            "review_result": {"review_cost": 0.0005},
+            "created_at": now,
+            "updated_at": now
+        }, spend_record=(0.0025, "2026-08-21", "ansible 0"))
+
+        # Seed 1 blocked cpython task (untrusted)
+        self.db.execute_atomic_transition({
+            "task_id": "kpi_cpy_0",
+            "opportunity_id": "kpi_cpy_0",
+            "state": "BLOCKED",
+            "repo": "python/cpython",
+            "title": "CPython task 0",
+            "error_reason": "HUMAN_APPROVAL_REJECTED: Invalid C syntax",
+            "worker_result": {"actual_cost": 0.001},
+            "review_result": {"review_cost": 0.0005},
+            "created_at": now,
+            "updated_at": now
+        }, spend_record=(0.0015, "2026-08-21", "cpython 0"))
+
+        res = kpis_report(db=self.db)
+        
+        # 1. Overall stats
+        self.assertEqual(res["overall"]["total_tasks"], 4)
+        self.assertEqual(res["overall"]["successful_executions"], 3)
+        self.assertEqual(res["overall"]["approval_rejected_executions"], 1)
+        self.assertEqual(res["overall"]["total_cost"], 0.007)
+        self.assertAlmostEqual(res["overall"]["success_rate"], 0.75)
+        self.assertAlmostEqual(res["overall"]["approval_rate"], 0.75)
+
+        # 2. Per-repo stats (pydantic: 2, cpython: 1, ansible: 1)
+        repos = {r["repo"]: r for r in res["per_repo"]}
+        self.assertIn("pydantic/pydantic", repos)
+        self.assertEqual(repos["pydantic/pydantic"]["total"], 2)
+        self.assertEqual(repos["pydantic/pydantic"]["completed"], 2)
+        self.assertTrue(repos["pydantic/pydantic"]["trusted"])
+
+        self.assertIn("python/cpython", repos)
+        self.assertEqual(repos["python/cpython"]["total"], 1)
+        self.assertEqual(repos["python/cpython"]["blocked"], 1)
+        self.assertFalse(repos["python/cpython"]["trusted"])
+
+        self.assertIn("ansible/ansible", repos)
+        self.assertEqual(repos["ansible/ansible"]["total"], 1)
+        self.assertEqual(repos["ansible/ansible"]["completed"], 1)
+        self.assertTrue(repos["ansible/ansible"]["trusted"])
+
+    def test_kpis_report_rejection_and_approval_sources(self):
+        """Confirm kpis_report correctly distinguishes tester, human rejection, trusted auto-approval, heuristic, and human approval."""
+        now = time.time()
+        # Seed base task records for FK constraints
+        for opp_id, repo in [("1", "pydantic/pydantic"), ("2", "scikit-learn/scikit-learn"), ("3", "ansible/ansible")]:
+            self.db.execute_atomic_transition({
+                "task_id": opp_id,
+                "opportunity_id": opp_id,
+                "state": "COMPLETED",
+                "repo": repo,
+                "created_at": now,
+                "updated_at": now
+            })
+
+        # 1. TESTER_REJECTED in audit log
+        self.db.log_event("TESTER_REJECTED", {"task_id": "test_t_rej", "unresolved": ["os.fake_symbol"]})
+
+        # 2. HUMAN_APPROVAL_REJECTED in audit log
+        self.db.log_event("HUMAN_APPROVAL_REJECTED", {"task_id": "test_h_rej", "reason": "Too narrow"})
+
+        # 3. Trusted auto-approval in approvals table
+        self.db.save_approval("appr-1", "1", "APPROVED", "Autonomous approval: pydantic/pydantic is a trusted repository")
+
+        # 4. Heuristic fallback auto-approval in approvals table
+        self.db.save_approval("appr-2", "2", "APPROVED", "Autonomous non-interactive approval")
+
+        # 5. Human approval via review_queue in approvals table
+        self.db.save_approval("appr-3", "3", "APPROVED", "Human approval granted via review_queue")
+
+        res = kpis_report(db=self.db)
+        sources = res["pipeline_sources"]
+        self.assertEqual(sources["tester_rejections"], 1)
+        self.assertEqual(sources["human_rejections"], 1)
+        self.assertEqual(sources["trusted_auto_approvals"], 1)
+        self.assertEqual(sources["heuristic_auto_approvals"], 1)
+        self.assertEqual(sources["human_approvals"], 1)
+
+    def test_kpis_report_detector_signals_quality(self):
+        """Confirm kpis_report computes approval/rejection rates against tasks with hedge and stub content."""
+        now = time.time()
+        
+        # 1. Hedge task that was BLOCKED
+        self.db.execute_atomic_transition({
+            "task_id": "sig_hedge_blocked",
+            "opportunity_id": "sig_hedge_blocked",
+            "state": "BLOCKED",
+            "repo": "pandas-dev/pandas",
+            "title": "Hedge patch",
+            "worker_result": {"output": "This is a conceptual patch."},
+            "created_at": now,
+            "updated_at": now
+        })
+
+        # 2. Stub task that was BLOCKED
+        self.db.execute_atomic_transition({
+            "task_id": "sig_stub_blocked",
+            "opportunity_id": "sig_stub_blocked",
+            "state": "BLOCKED",
+            "repo": "pandas-dev/pandas",
+            "title": "Stub patch",
+            "worker_result": {"output": "```python\n    # Should handle missing\n    pass # (Implementation assigns index)\n```"},
+            "created_at": now,
+            "updated_at": now
+        })
+
+        # 3. Clean task that was COMPLETED
+        self.db.execute_atomic_transition({
+            "task_id": "sig_clean_completed",
+            "opportunity_id": "sig_clean_completed",
+            "state": "COMPLETED",
+            "repo": "pydantic/pydantic",
+            "title": "Clean patch",
+            "worker_result": {"output": "```python\ndef solve(): return 42\n```"},
+            "created_at": now,
+            "updated_at": now
+        })
+
+        res = kpis_report(db=self.db)
+        signals = res["detector_signals"]
+        
+        self.assertEqual(signals["hedge"]["total"], 1)
+        self.assertEqual(signals["hedge"]["rejected"], 1)
+        self.assertEqual(signals["hedge"]["rejection_rate"], 1.0)
+
+        self.assertEqual(signals["stub"]["total"], 1)
+        self.assertEqual(signals["stub"]["rejected"], 1)
+        self.assertEqual(signals["stub"]["rejection_rate"], 1.0)
+
+        self.assertEqual(signals["clean"]["total"], 1)
+        self.assertEqual(signals["clean"]["approved"], 1)
+        self.assertEqual(signals["clean"]["approval_rate"], 1.0)
 
 if __name__ == "__main__":
     unittest.main()
