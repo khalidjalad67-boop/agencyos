@@ -41,7 +41,7 @@ class OpportunityFetcher:
     def fetch_opportunities(self, limit: int = 105) -> List[Opportunity]:
         """Fetches 100% genuine live open issues from GitHub REST API across target repositories."""
         opportunities = []
-        per_repo_target = 25
+        per_repo_target = 100
         
         for repo in self.SUPPORTED_REPOS:
             if len(opportunities) >= limit:
