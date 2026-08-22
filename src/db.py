@@ -471,3 +471,61 @@ class Database:
                 "average_cost_per_task": avg_cost,
                 "today_cumulative_spend": today_cumulative_spend
             }
+
+    # --- RETROSPECTIVES METHODS ---
+    def save_retrospective(self, retro_data: Dict[str, Any]) -> None:
+        """Saves or updates a retrospective record for a terminal task."""
+        now = time.time()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO retrospectives (
+                    task_id, repo, outcome, review_method, cost,
+                    rejection_source, hedge_flagged, stub_flagged, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    repo=excluded.repo,
+                    outcome=excluded.outcome,
+                    review_method=excluded.review_method,
+                    cost=excluded.cost,
+                    rejection_source=excluded.rejection_source,
+                    hedge_flagged=excluded.hedge_flagged,
+                    stub_flagged=excluded.stub_flagged,
+                    created_at=excluded.created_at
+            """, (
+                retro_data["task_id"],
+                retro_data.get("repo", "unknown"),
+                retro_data["outcome"],
+                retro_data.get("review_method"),
+                float(retro_data.get("cost", 0.0)),
+                retro_data.get("rejection_source"),
+                1 if retro_data.get("hedge_flagged") else 0,
+                1 if retro_data.get("stub_flagged") else 0,
+                retro_data.get("created_at", now)
+            ))
+            conn.commit()
+
+    def get_retrospective(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM retrospectives WHERE task_id = ?", (task_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["hedge_flagged"] = bool(d["hedge_flagged"])
+            d["stub_flagged"] = bool(d["stub_flagged"])
+            return d
+
+    def get_all_retrospectives(self) -> List[Dict[str, Any]]:
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM retrospectives ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            res = []
+            for r in rows:
+                d = dict(r)
+                d["hedge_flagged"] = bool(d["hedge_flagged"])
+                d["stub_flagged"] = bool(d["stub_flagged"])
+                res.append(d)
+            return res

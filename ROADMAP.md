@@ -513,9 +513,16 @@ builds it early:
 - Most of Platform Services (auth, notifications, storage as shared modules)
 - 6 of the 8 original Business Units
 - Executive Board as reasoning agents (stays rule-based until proven insufficient)
-- Hermes migration (planned for right before Phase 1, per `PROJECT_STATUS.md`
-  — but not before Phase 0.8's Hermes gate passes; migrating an unstable
-  engine just moves the same bugs onto a new platform)
+- Hermes migration: superseded. Process supervision was resolved via
+  systemd (2026-08-15, confirmed in production -- see
+  PROJECT_STATUS.md's standing decisions). Phase 1 was built and
+  completed on the current Python/systemd stack without Hermes.
+  Hermes as a platform for persistence/self-generating skills remains
+  a separate, unevaluated idea with no phase number attached to it --
+  it is being independently tested in an isolated environment outside
+  this project. It only returns to this roadmap if and when that
+  evaluation produces real, specific evidence it fits Phase 4 or a
+  later phase better than the current stack -- not by default.
 
 There is no dedicated "Infrastructure phase." Infrastructure is extracted
 into `shared/` only when two real callers need the same thing — see the
