@@ -414,6 +414,79 @@ decisions made in conversation that aren't written into those docs yet.
   > Tester-style splits), so investment went into the Tester + detectors
   > + SOP groundwork instead of a second generic worker with no
   > demonstrated need.
+- **Phase 4 (partial) — Deterministic retrospective capture deployed to
+  production; Asset Library explicitly deferred (2026-08-22).**
+  - **Scope, deliberately narrow**: per a considered decision, Phase 4's
+    retrospective mechanism was built deterministic-only (no LLM call),
+    reusing existing signals (Tester result, hedge-language/stub-
+    placeholder detectors, cost calculation, rejection categorization)
+    rather than adding new reasoning. The Asset Library (tagged,
+    searchable reusable outputs) was explicitly NOT built — only 17 real
+    `llm_judged` completions exist in production, genuinely thin
+    evidence, so per the Governing Rule's two-real-callers standard, no
+    library infrastructure was built. This task captures structured
+    facts only; it does not satisfy Phase 4's real Definition of Done
+    ("the 10th task is measurably faster or cheaper than the 1st"),
+    which requires the loop to actually use retrospective data to
+    improve SOPs/prompts and a before/after comparison over volume —
+    that remains open.
+  - **New `retrospectives` table** (migration `002_add_retrospectives.sql`):
+    one row per terminal task (`COMPLETED`/`BLOCKED`/`QUALITY_REJECTED`/
+    `WORKER_FAILED`), capturing outcome, `review_method`, combined
+    worker+review cost, categorized `rejection_source`
+    (`TESTER_REJECTED`/`HUMAN_APPROVAL_REJECTED`/`BUDGET_BLOCKED`/null),
+    and hedge/stub detector flags. Generation wired into
+    `src/engine.py` at every terminal-state transition
+    (`generate_retrospective_for_task()`), and into
+    `tools/review_queue.py`'s `approve_task()`/`reject_task()` for the
+    human-review path.
+  - **A real bug caught before deploy**: the `TESTER_REJECTED`
+    categorization logic (string-matching `error_reason`) was initially
+    unverifiable against real data, since zero real `TESTER_REJECTED`
+    tasks exist in production yet. Confirmed correct by reading the
+    actual `src/engine.py` source (not assumed): the tester-rejection
+    branch explicitly constructs `error_reason = f"TESTER_REJECTED:
+    {feedback}"`, symmetric to the already-verified `QUALITY_REJECTED:`
+    prefix pattern. Real production data confirmed the `QUALITY_REJECTED:`
+    and `BUDGET_BLOCKED:` prefix patterns directly via a live VPS query
+    before trusting the categorization logic.
+  - **Backfill run directly on the VPS** (not the stale local Windows
+    dev database, which was confirmed earlier in this session to be a
+    different, non-representative copy — 132 tasks, 100%
+    `heuristic_fallback`, `python/cpython` still active). Real result:
+    320/320 terminal tasks processed — 277 `COMPLETED`, 37 `BLOCKED`,
+    1 `QUALITY_REJECTED`, 5 `WORKER_FAILED` — exactly matching the live
+    engine's own telemetry snapshot from the same restart
+    (`total_tasks: 321`, the 1 remaining task correctly excluded as
+    still `WAITING_APPROVAL`, not yet terminal). `Flagged (Hedge/Stub):
+    15` independently cross-checked against `kpis`'s existing
+    "Combined Any Warning Detected: 15 tasks" — same number from two
+    different code paths, not just internally self-consistent.
+  - **VPS/origin divergence caught and resolved during deploy**: the
+    VPS was found to be 4 commits ahead of `origin/main` (unpushed
+    local merge-conflict-resolution commits from the earlier Phase 2
+    `worker_v1.md`/pricing sync, dated 2026-08-21 03:xx, predating a
+    same-day 06:39 Windows-side commit that re-applied the identical
+    fixes as fresh, unrelated edits). Confirmed via `git diff` that
+    both histories carried byte-identical content for the affected
+    files (`src/opportunity.py`, `src/worker.py`) before merging — the
+    merge itself completed cleanly via git's `ort` strategy with no
+    manual conflict resolution needed. VPS currently has no push
+    credentials configured, so the resulting merge commit
+    (`12175b3`) remains local-only on the VPS, unpushed to
+    `origin/main` — flagged as a real, low-priority gap: the VPS can
+    silently accumulate unpushed local commits again next time a
+    VPS-side merge happens, the same pattern that caused this
+    divergence in the first place. Not urgent, but worth setting up
+    VPS push credentials at some point to close this permanently.
+  - **`ROADMAP.md`'s stale Hermes-migration note also corrected** in
+    the same deploy: the old text described Hermes migration as
+    planned "right before Phase 1," a plan superseded by the real
+    2026-08-15 systemd decision (process supervision resolved via
+    systemd, confirmed in production; Phase 1 was built and completed
+    without Hermes). Updated to reflect that Hermes remains a
+    separate, unevaluated idea with no phase number attached, being
+    tested independently outside this project.
 
 ## Hard-won lessons from this build (apply going forward)
 
