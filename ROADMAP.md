@@ -479,6 +479,7 @@ demonstrated bottleneck.
 **Definition of Done:**
 - [ ] Adding a second business unit (Phase 5) requires config changes only,
       not code changes to this layer
+Note: existing CFO/CTO/COO decisions consolidated into docs/EXECUTIVE_LAYER.md (2026-08-21) -- this does not satisfy the DoD above, which remains unverifiable until Phase 5 exists.
 
 ---
 
