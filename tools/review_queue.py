@@ -282,6 +282,8 @@ def approve_task(task_id: str, db: Optional[Database] = None, db_path: Optional[
             now_time
         )
     )
+    from src.retrospective import generate_retrospective_for_task
+    generate_retrospective_for_task(task_id, database)
     print(f"[APPROVAL SUCCESS] Task {task_id} transitioned from WAITING_APPROVAL -> COMPLETED (Cost: ${total_cost:.6f}).")
     return True
 
@@ -321,6 +323,8 @@ def reject_task(task_id: str, reason: str, db: Optional[Database] = None, db_pat
             now_time
         )
     )
+    from src.retrospective import generate_retrospective_for_task
+    generate_retrospective_for_task(task_id, database)
     print(f"[REJECTION SUCCESS] Task {task_id} transitioned from WAITING_APPROVAL -> BLOCKED (Reason: {reason.strip()}).")
     return True
 
@@ -528,6 +532,70 @@ def kpis_report(db: Optional[Database] = None, db_path: Optional[str] = None, co
         }
     }
 
+def retrospectives_report(db: Optional[Database] = None, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Prints a structured, plain-text summary of all persisted retrospectives."""
+    database = db or Database(db_path=db_path)
+    retros = database.get_all_retrospectives()
+
+    print("=" * 80)
+    print(f"AGENCYOS TASK RETROSPECTIVES ({len(retros)} records)")
+    print("=" * 80)
+
+    if not retros:
+        print("No retrospective records found in database.")
+        print("=" * 80)
+        return retros
+
+    fmt = "{:<20} {:<24} {:<18} {:<18} {:>10}  {:<26} {:<12}"
+    print(fmt.format("Task ID", "Repository", "Outcome", "Review Method", "Cost", "Rejection Source", "Flags"))
+    print("-" * 135)
+
+    completed_cnt = 0
+    blocked_cnt = 0
+    quality_rejected_cnt = 0
+    worker_failed_cnt = 0
+    flagged_cnt = 0
+
+    for r in retros:
+        outcome = r.get("outcome", "unknown")
+        if outcome == "COMPLETED":
+            completed_cnt += 1
+        elif outcome == "BLOCKED":
+            blocked_cnt += 1
+        elif outcome == "QUALITY_REJECTED":
+            quality_rejected_cnt += 1
+        elif outcome == "WORKER_FAILED":
+            worker_failed_cnt += 1
+
+        flags = []
+        if r.get("hedge_flagged"):
+            flags.append("HEDGE")
+        if r.get("stub_flagged"):
+            flags.append("STUB")
+        if flags:
+            flagged_cnt += 1
+        flag_str = ",".join(flags) if flags else "CLEAN"
+
+        task_id_str = str(r.get("task_id", ""))[:18]
+        repo_str = str(r.get("repo", "unknown"))[:22]
+        method_str = str(r.get("review_method") or "none")[:16]
+        rej_str = str(r.get("rejection_source") or "none")[:24]
+        cost_str = f"${float(r.get('cost', 0.0)):.6f}"
+
+        print(fmt.format(task_id_str, repo_str, outcome, method_str, cost_str, rej_str, flag_str))
+
+    print("=" * 80)
+    print("Summary:")
+    print(f"  - Total Records        : {len(retros)}")
+    print(f"  - Completed Tasks      : {completed_cnt}")
+    print(f"  - Blocked Tasks        : {blocked_cnt}")
+    print(f"  - Quality Rejected     : {quality_rejected_cnt}")
+    print(f"  - Worker Failed        : {worker_failed_cnt}")
+    print(f"  - Flagged (Hedge/Stub) : {flagged_cnt}")
+    print("=" * 80)
+
+    return retros
+
 def main():
     parser = argparse.ArgumentParser(description="AgencyOS Human Review Queue Manager")
     parser.add_argument("--db", default=None, help="Path to database file (default: agencyos.db)")
@@ -553,6 +621,9 @@ def main():
     # kpis
     subparsers.add_parser("kpis", help="Print comprehensive KPIs report (lifecycle, per-repo, rejection sources, detector signal check)")
 
+    # retrospectives
+    subparsers.add_parser("retrospectives", help="Print all persisted task retrospectives (deterministic outcome, cost, flags)")
+
     args = parser.parse_args()
 
     if args.command == "list":
@@ -571,6 +642,8 @@ def main():
             sys.exit(1)
     elif args.command == "kpis":
         kpis_report(db_path=args.db, config_path=args.config)
+    elif args.command == "retrospectives":
+        retrospectives_report(db_path=args.db)
 
 if __name__ == "__main__":
     main()

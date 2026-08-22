@@ -14,22 +14,31 @@ def resolve_db_path(db_path: str = "agencyos.db") -> str:
     return os.path.join(get_project_root(), db_path)
 
 def run_migrations(db_path: str = "agencyos.db") -> str:
-    """Applies migrations/001_initial_schema.sql to the target SQLite database deterministically."""
+    """Applies all numbered SQL migrations in migrations/ to the target SQLite database deterministically."""
     resolved_path = resolve_db_path(db_path)
-    migration_file = os.path.join(get_project_root(), "migrations", "001_initial_schema.sql")
+    migrations_dir = os.path.join(get_project_root(), "migrations")
 
-    if not os.path.exists(migration_file):
-        raise FileNotFoundError(f"Migration script not found at {migration_file}")
+    if not os.path.exists(migrations_dir):
+        raise FileNotFoundError(f"Migrations directory not found at {migrations_dir}")
 
-    with open(migration_file, "r", encoding="utf-8") as f:
-        sql_script = f.read()
+    migration_files = sorted([
+        os.path.join(migrations_dir, f)
+        for f in os.listdir(migrations_dir)
+        if f.endswith(".sql")
+    ])
+
+    if not migration_files:
+        raise FileNotFoundError(f"No SQL migration scripts found in {migrations_dir}")
 
     conn = sqlite3.connect(resolved_path, timeout=30.0)
     try:
         cursor = conn.cursor()
-        # Execute migration script in transaction
-        cursor.executescript(sql_script)
-        conn.commit()
+        for migration_file in migration_files:
+            with open(migration_file, "r", encoding="utf-8") as f:
+                sql_script = f.read()
+            cursor.executescript(sql_script)
+            conn.commit()
+            print(f"[MIGRATION SUCCESS] Applied {migration_file} to {resolved_path}")
         
         # Verify FK integrity after migration
         cursor.execute("PRAGMA foreign_keys = ON;")
@@ -37,7 +46,6 @@ def run_migrations(db_path: str = "agencyos.db") -> str:
         if fk_errors:
             raise RuntimeError(f"Foreign key violations detected post-migration: {fk_errors}")
             
-        print(f"[MIGRATION SUCCESS] Applied {migration_file} to {resolved_path}")
         return resolved_path
     except Exception as e:
         conn.rollback()

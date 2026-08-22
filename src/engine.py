@@ -12,6 +12,7 @@ from src.approval import ApprovalGate, ApprovalDecision
 from src.logger import AuditLogger
 from src.idempotency import IdempotencyGuard
 from src.watchdog import OperationalWatchdog
+from src.retrospective import generate_retrospective_for_task
 
 class AutonomousEngine:
     """Restart-safe autonomous engine executing the task state machine.
@@ -97,6 +98,7 @@ class AutonomousEngine:
                         "repo": repo
                     })
                 )
+                generate_retrospective_for_task(task_id, self.db)
                 return {"status": "QUALITY_REJECTED", "reason": qual_reason, "task_id": task_id}
 
             # Manager: rule-based routing & domain tagging
@@ -141,6 +143,7 @@ class AutonomousEngine:
                         "repo": repo
                     })
                 )
+                generate_retrospective_for_task(task_id, self.db)
                 return {"status": "BUDGET_BLOCKED", "reason": budget_reason, "task_id": task_id}
 
             task["state"] = "READY"
@@ -195,6 +198,7 @@ class AutonomousEngine:
                             "error": worker_result.error_reason
                         })
                     )
+                    generate_retrospective_for_task(task_id, self.db)
                     return {"status": "WORKER_FAILED", "reason": worker_result.error_reason, "task_id": task_id}
 
                 self.watchdog.record_success(source)
@@ -233,6 +237,7 @@ class AutonomousEngine:
                     spend_record=(worker_result.actual_cost, today_str, "Worker spend (rejected by tester)")
                 )
                 self.budget_guard.cumulative_today_spend = self.db.get_today_spend(today_str)
+                generate_retrospective_for_task(task_id, self.db)
                 return {
                     "status": "QUALITY_REJECTED",
                     "reason": tester_result.feedback,
@@ -317,6 +322,7 @@ class AutonomousEngine:
                         now_time
                     )
                 )
+                generate_retrospective_for_task(task_id, self.db)
                 return {"status": "COMPLETED", "task_id": task_id}
             else:
                 reason = approval_decision.comments if review_result.passed else review_result.feedback
@@ -336,6 +342,7 @@ class AutonomousEngine:
                         now_time
                     )
                 )
+                generate_retrospective_for_task(task_id, self.db)
                 return {"status": "BLOCKED", "reason": reason, "task_id": task_id}
 
         return {"status": task["state"], "task_id": task_id}
